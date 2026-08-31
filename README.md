@@ -59,7 +59,7 @@ go build -o aos ./cmd/aos
 
 ```json
 {
-  "endpoint": "tos-cn-beijing.ivolces.com",
+  "endpoint": "tos-cn-beijing.volces.com",
   "region": "cn-beijing",
   "bucket": "example-bucket",
   "access_key_id": "AKLT...",

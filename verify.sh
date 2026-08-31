@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# aos 连通性验证脚本 —— 在【有专线】的节点上执行（如 192.0.2.1）
+# aos 连通性验证脚本 —— 在【有专线】的节点上执行
 # 用法: bash verify.sh [bucket]
 set -u
 BUCKET="${1:-example-bucket}"
