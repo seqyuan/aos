@@ -1,0 +1,33 @@
+# ============ 敏感信息（绝不提交） ============
+# 凭据文件（AK/SK），随二进制分发，不入库
+annotos.json
+annotos.yaml
+*.json.example.tmp
+.env
+*.pem
+*.key
+
+# ============ 任务数据库（本地状态） ============
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+.annotos/
+
+# ============ 编译产物 ============
+/annotos
+/annotos.exe
+/dist/
+/build/
+
+# ============ 断点续传等临时文件 ============
+*.checkpoint
+*.tmp
+
+# ============ 系统/编辑器 ============
+.DS_Store
+__pycache__/
+.ipynb_checkpoints/
+.idea/
+.vscode/

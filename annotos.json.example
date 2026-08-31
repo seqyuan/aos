@@ -1,0 +1,7 @@
+{
+  "endpoint": "https://tos-cn-beijing.ivolces.com",
+  "region": "cn-beijing",
+  "bucket": "example-bucket",
+  "access_key_id": "AKLTxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+  "secret_access_key": "WXpaXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX=="
+}
