@@ -154,4 +154,4 @@ make docs                  # 从 README 生成 GitHub Pages 站点到 _site/
 make build / test / ping
 ```
 
-说明文档发布在 [seqyuan.github.io/aos](https://seqyuan.github.io/aos/)。打 `v*` 标签会触发 Release，附带 Linux 二进制。
+说明文档发布在 [seqyuan.github.io/aos](https://seqyuan.github.io/aos/)（仓库需为 Public，或账号具备 GitHub Pages）。每次 push `main` 还会把 `_site` 作为 `docs-site` artifact 挂在 [Actions](https://github.com/seqyuan/aos/actions) 上。打 `v*` 标签会触发 Release，附带 Linux 二进制。
