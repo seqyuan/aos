@@ -1,4 +1,4 @@
-// Package db 提供 SQLite 数据库访问，用于记录 annotos cp 任务及其软链接信息。
+// Package db 提供 SQLite 数据库访问，用于记录 aos cp 任务及其软链接信息。
 package db
 
 import (
@@ -77,16 +77,19 @@ CREATE TABLE IF NOT EXISTS task_links (
 CREATE INDEX IF NOT EXISTS idx_links_task ON task_links(task_id);
 `
 
-// DefaultPath 返回默认数据库路径：$ANNOTOS_DB 或 ~/.annotos/annotos.db。
+// DefaultPath 返回默认任务库路径：$AOS_DB，否则 $XDG_CONFIG_HOME/aos.db，再否则 ~/.config/aos.db。
 func DefaultPath() (string, error) {
-	if p := os.Getenv("ANNOTOS_DB"); p != "" {
+	if p := os.Getenv("AOS_DB"); p != "" {
 		return p, nil
+	}
+	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
+		return filepath.Join(xdg, "aos.db"), nil
 	}
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
-		return filepath.Join(".", "annotos.db"), nil
+		return filepath.Join(".", "aos.db"), nil
 	}
-	return filepath.Join(home, ".annotos", "annotos.db"), nil
+	return filepath.Join(home, ".config", "aos.db"), nil
 }
 
 // Open 打开（必要时创建）数据库并初始化表结构。
@@ -239,41 +242,64 @@ func (d *DB) GetTask(id int64) (Task, error) {
 	return t, rows.Err()
 }
 
-// FindTaskByLocalPath 按 cp 时的 -d 本地路径查找最近一次任务（先精确匹配，再匹配绝对路径）。
+// FindTaskByLocalPath 按 cp 时的 -d 本地路径查找最近一次任务。
+// 依次尝试原串、Clean、Abs，以兼容相对路径与绝对路径。
 func (d *DB) FindTaskByLocalPath(localPath string) (Task, error) {
-	candidates := []string{localPath}
-	if abs, err := filepath.Abs(localPath); err == nil && abs != localPath {
-		candidates = append(candidates, abs)
-	}
-	for _, c := range candidates {
-		rows, err := d.Query(`SELECT id, spi, contract, local_path, remote_prefix, total_files, total_bytes,
-			done_files, done_bytes, failed_files, link_count, status, COALESCE(error,''),
-			started_at, COALESCE(finished_at,0), updated_at FROM tasks WHERE local_path=? ORDER BY id DESC LIMIT 1`, c)
+	for _, c := range localPathCandidates(localPath) {
+		t, ok, err := d.lookupTaskByLocalPath(c)
 		if err != nil {
 			return Task{}, err
 		}
-		has := rows.Next()
-		if !has {
-			rows.Close()
-			continue
+		if ok {
+			return t, nil
 		}
-		var t Task
-		var start, finish, upd int64
-		if err := rows.Scan(&t.ID, &t.SPI, &t.Contract, &t.LocalPath, &t.RemotePrefix,
-			&t.TotalFiles, &t.TotalBytes, &t.DoneFiles, &t.DoneBytes, &t.FailedFiles,
-			&t.LinkCount, &t.Status, &t.Error, &start, &finish, &upd); err != nil {
-			rows.Close()
-			return Task{}, err
-		}
-		rows.Close()
-		t.StartedAt = time.Unix(start, 0)
-		if finish > 0 {
-			t.FinishedAt = time.Unix(finish, 0)
-		}
-		t.UpdatedAt = time.Unix(upd, 0)
-		return t, nil
 	}
-	return Task{}, fmt.Errorf("没有找到从路径 %q 上传过的任务（该路径需与 cp 时的 -d 一致，或用 annotos stat 查看任务）", localPath)
+	return Task{}, fmt.Errorf("没有找到从路径 %q 上传过的任务（该路径需与 cp 时的 -d 一致，或用 aos stat 查看任务）", localPath)
+}
+
+func localPathCandidates(localPath string) []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(s string) {
+		if s == "" || seen[s] {
+			return
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	add(localPath)
+	add(filepath.Clean(localPath))
+	if abs, err := filepath.Abs(localPath); err == nil {
+		add(abs)
+		add(filepath.Clean(abs))
+	}
+	return out
+}
+
+func (d *DB) lookupTaskByLocalPath(localPath string) (Task, bool, error) {
+	rows, err := d.Query(`SELECT id, spi, contract, local_path, remote_prefix, total_files, total_bytes,
+		done_files, done_bytes, failed_files, link_count, status, COALESCE(error,''),
+		started_at, COALESCE(finished_at,0), updated_at FROM tasks WHERE local_path=? ORDER BY id DESC LIMIT 1`, localPath)
+	if err != nil {
+		return Task{}, false, err
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		return Task{}, false, nil
+	}
+	var t Task
+	var start, finish, upd int64
+	if err := rows.Scan(&t.ID, &t.SPI, &t.Contract, &t.LocalPath, &t.RemotePrefix,
+		&t.TotalFiles, &t.TotalBytes, &t.DoneFiles, &t.DoneBytes, &t.FailedFiles,
+		&t.LinkCount, &t.Status, &t.Error, &start, &finish, &upd); err != nil {
+		return Task{}, false, err
+	}
+	t.StartedAt = time.Unix(start, 0)
+	if finish > 0 {
+		t.FinishedAt = time.Unix(finish, 0)
+	}
+	t.UpdatedAt = time.Unix(upd, 0)
+	return t, true, rows.Err()
 }
 
 // FindTaskByRemotePrefix 按远端前缀查找最近一次任务。

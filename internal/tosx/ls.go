@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/seqyuan/annotos/internal/config"
-	"github.com/seqyuan/annotos/internal/human"
+	"github.com/seqyuan/aos/internal/config"
+	"github.com/seqyuan/aos/internal/human"
 	"github.com/volcengine/ve-tos-golang-sdk/v2/tos"
 )
 

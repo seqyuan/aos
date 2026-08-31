@@ -1,7 +1,7 @@
 # ============ 敏感信息（绝不提交） ============
 # 凭据文件（AK/SK），随二进制分发，不入库
-annotos.json
-annotos.yaml
+aos.json
+aos.yaml
 *.json.example.tmp
 .env
 *.pem
@@ -13,13 +13,14 @@ annotos.yaml
 *.db-shm
 *.sqlite
 *.sqlite3
-.annotos/
+.aos/
 
 # ============ 编译产物 ============
-/annotos
-/annotos.exe
+/aos
+/aos.exe
 /dist/
 /build/
+/_site/
 
 # ============ 断点续传等临时文件 ============
 *.checkpoint

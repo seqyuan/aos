@@ -1,14 +1,14 @@
-// annotos — 火山云 TOS 上传/下载/浏览命令行工具。
+// aos — 对象存储上传/下载/浏览命令行工具（当前后端为火山云 TOS）。
 //
 // 用法示例：
 //
-//	annotos ls tos://example-bucket/ACME2026001           查看目录树
-//	annotos cp -spi PM-ACME2026001-01 -d ./matrix     上传（自动推导 contract）
-//	annotos down -spi PM-ACME2026001-01 -d /local     下载
-//	annotos stat                                            查询任务状态（sqlite）
-//	annotos restore -id 3 -d /local                         按软链接记录还原 symlink
-//	annotos check                                           连接与权限诊断
-//	annotos config set -ak AK... -sk SK...                  配置凭据
+//	aos ls tos://example-bucket/ACME2026001           查看目录树
+//	aos cp -spi PM-ACME2026001-01 -d ./dataset         上传（自动推导 contract）
+//	aos down -spi PM-ACME2026001-01 -d /local           下载
+//	aos stat                                            查询任务状态（sqlite）
+//	aos restore -id 3 -d /local                         按软链接记录还原 symlink
+//	aos check                                           连接与权限诊断
+//	aos config set -ak AK... -sk SK...                  配置凭据
 package main
 
 import (
@@ -21,13 +21,14 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/seqyuan/annotos/internal/config"
-	"github.com/seqyuan/annotos/internal/human"
-	"github.com/seqyuan/annotos/internal/tosx"
+	"github.com/seqyuan/aos/internal/config"
+	"github.com/seqyuan/aos/internal/human"
+	"github.com/seqyuan/aos/internal/tosx"
 	"github.com/volcengine/ve-tos-golang-sdk/v2/tos"
 )
 
-const version = "0.2.0"
+// version 由构建注入（git tag / CI）；本地 go build 时为 dev。
+var version = "dev"
 
 func main() {
 	os.Exit(run(os.Args[1:]))
@@ -42,7 +43,7 @@ func run(args []string) int {
 	switch cmd {
 	case "ls", "list":
 		return cmdLS(rest)
-	case "cp":
+	case "cp", "upload":
 		return cmdCP(rest)
 	case "down", "download", "dl":
 		return cmdDown(rest)
@@ -55,13 +56,13 @@ func run(args []string) int {
 	case "check":
 		return cmdCheck(rest)
 	case "version", "-version", "--version", "-v":
-		fmt.Printf("annotos %s\n", version)
+		fmt.Printf("aos %s\n", version)
 		return 0
 	case "help", "-h", "--help":
 		printUsage(os.Stdout)
 		return 0
 	default:
-		fmt.Fprintf(os.Stderr, "annotos: 未知命令 %q\n\n", cmd)
+		fmt.Fprintf(os.Stderr, "aos: 未知命令 %q\n\n", cmd)
 		printUsage(os.Stderr)
 		return 2
 	}
@@ -78,7 +79,7 @@ type baseFlags struct {
 }
 
 func (b *baseFlags) register(fs *flag.FlagSet) {
-	fs.StringVar(&b.configPath, "config", "", "配置文件路径（默认：二进制同目录 annotos.json）")
+	fs.StringVar(&b.configPath, "config", "", "配置文件路径（默认：二进制同目录 aos.json）")
 	fs.StringVar(&b.endpoint, "endpoint", "", "覆盖 endpoint（如 tos-cn-beijing.ivolces.com）")
 	fs.StringVar(&b.region, "region", "", "覆盖 region（如 cn-beijing）")
 	fs.StringVar(&b.bucket, "bucket", "", "覆盖 bucket 名称")
@@ -123,7 +124,7 @@ func parseFlagSet(fs *flag.FlagSet, args []string, usage string) (bool, error) {
 }
 
 // reorderArgs 将位置参数挪到末尾，使 -flag 可以出现在命令行任意位置。
-// 例如：annotos ls tos://xxx -endpoint yyy 中的 -endpoint 也能被解析。
+// 例如：aos ls tos://xxx -endpoint yyy 中的 -endpoint 也能被解析。
 func reorderArgs(fs *flag.FlagSet, args []string) []string {
 	boolFlags := map[string]bool{}
 	fs.VisitAll(func(f *flag.Flag) {
@@ -152,32 +153,32 @@ func reorderArgs(fs *flag.FlagSet, args []string) []string {
 }
 
 // ---------------------------------------------------------------------------
-// annotos ls
+// aos ls
 
 func cmdLS(args []string) int {
-	fs := flag.NewFlagSet("annotos ls", flag.ContinueOnError)
+	fs := flag.NewFlagSet("aos ls", flag.ContinueOnError)
 	var b baseFlags
 	b.register(fs)
 	maxDepth := fs.Int("max-depth", 0, "最大显示深度（0 表示不限制）")
 	showMod := fs.Bool("m", false, "显示文件修改时间")
-	if ok, err := parseFlagSet(fs, args, "用法: annotos ls <tos路径> [选项]\n\n示例:\n  annotos ls tos://example-bucket/ACME2026001\n  annotos ls ACME2026001/PM-ACME2026001-01/matrix"); !ok {
+	if ok, err := parseFlagSet(fs, args, "用法: aos ls <tos路径> [选项]\n\n示例:\n  aos ls tos://example-bucket/ACME2026001\n  aos ls ACME2026001/PM-ACME2026001-01/dataset"); !ok {
 		return 2
 	} else if err != nil {
 		return 2
 	}
 	if fs.NArg() != 1 {
-		fmt.Fprintln(os.Stderr, "annotos ls: 需要 1 个参数（tos 路径）")
+		fmt.Fprintln(os.Stderr, "aos ls: 需要 1 个参数（tos 路径）")
 		fs.Usage()
 		return 2
 	}
 
 	cfg, _, err := b.loadConfig()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "annotos ls: %v\n", err)
+		fmt.Fprintf(os.Stderr, "aos ls: %v\n", err)
 		return 1
 	}
 	if err := cfg.Validate(); err != nil {
-		fmt.Fprintf(os.Stderr, "annotos ls: %v\n（运行 annotos config set 配置凭据）\n", err)
+		fmt.Fprintf(os.Stderr, "aos ls: %v\n（运行 aos config set 配置凭据）\n", err)
 		return 1
 	}
 	ctx, cancel := newSignalCtx()
@@ -187,7 +188,7 @@ func cmdLS(args []string) int {
 
 	client, err := tosx.NewClient(cfg)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "annotos ls: %v\n", err)
+		fmt.Fprintf(os.Stderr, "aos ls: %v\n", err)
 		return 1
 	}
 	if err := tosx.LS(ctx, client, cfg, tosx.LSOptions{
@@ -195,14 +196,14 @@ func cmdLS(args []string) int {
 		MaxDepth: *maxDepth,
 		ShowMod:  *showMod,
 	}, os.Stdout); err != nil {
-		fmt.Fprintf(os.Stderr, "annotos ls: %v\n", err)
+		fmt.Fprintf(os.Stderr, "aos ls: %v\n", err)
 		return 1
 	}
 	return 0
 }
 
 // ---------------------------------------------------------------------------
-// annotos config
+// aos config
 
 func cmdConfig(args []string) int {
 	if len(args) > 0 && args[0] == "set" {
@@ -211,7 +212,7 @@ func cmdConfig(args []string) int {
 	if len(args) > 0 && args[0] == "path" {
 		p, err := config.ResolvePath("")
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "annotos config: %v\n", err)
+			fmt.Fprintf(os.Stderr, "aos config: %v\n", err)
 			return 1
 		}
 		fmt.Println(p)
@@ -220,12 +221,12 @@ func cmdConfig(args []string) int {
 	// 默认展示当前配置
 	path, err := config.ResolvePath("")
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "annotos config: %v\n", err)
+		fmt.Fprintf(os.Stderr, "aos config: %v\n", err)
 		return 1
 	}
 	cfg, err := config.Load(path)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "annotos config: %v\n", err)
+		fmt.Fprintf(os.Stderr, "aos config: %v\n", err)
 		return 1
 	}
 	fmt.Printf("配置文件: %s\n", path)
@@ -238,30 +239,30 @@ func cmdConfig(args []string) int {
 }
 
 func cmdConfigSet(args []string) int {
-	fs := flag.NewFlagSet("annotos config set", flag.ContinueOnError)
+	fs := flag.NewFlagSet("aos config set", flag.ContinueOnError)
 	var b baseFlags
 	b.register(fs)
 	ak := fs.String("ak", "", "Access Key ID")
 	sk := fs.String("sk", "", "Secret Access Key")
-	if ok, err := parseFlagSet(fs, args, "用法: annotos config set -ak <AK> -sk <SK> [选项]\n\n示例:\n  annotos config set -ak AKLTMxxx -sk WXpaxxx -endpoint https://tos-cn-beijing.ivolces.com -bucket example-bucket"); !ok {
+	if ok, err := parseFlagSet(fs, args, "用法: aos config set -ak <AK> -sk <SK> [选项]\n\n示例:\n  aos config set -ak AKLTMxxx -sk WXpaxxx -endpoint https://tos-cn-beijing.ivolces.com -bucket example-bucket"); !ok {
 		return 2
 	} else if err != nil {
 		return 2
 	}
 	if *ak == "" || *sk == "" {
-		fmt.Fprintln(os.Stderr, "annotos config set: 需要 -ak 与 -sk 参数")
+		fmt.Fprintln(os.Stderr, "aos config set: 需要 -ak 与 -sk 参数")
 		fs.Usage()
 		return 2
 	}
 
 	path, err := config.ResolvePath(b.configPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "annotos config set: %v\n", err)
+		fmt.Fprintf(os.Stderr, "aos config set: %v\n", err)
 		return 1
 	}
 	cfg, err := config.Load(path)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "annotos config set: %v\n", err)
+		fmt.Fprintf(os.Stderr, "aos config set: %v\n", err)
 		return 1
 	}
 	cfg.AccessKey = *ak
@@ -276,7 +277,7 @@ func cmdConfigSet(args []string) int {
 		cfg.Bucket = b.bucket
 	}
 	if err := cfg.Save(path); err != nil {
-		fmt.Fprintf(os.Stderr, "annotos config set: %v\n", err)
+		fmt.Fprintf(os.Stderr, "aos config set: %v\n", err)
 		return 1
 	}
 	fmt.Printf("已写入配置: %s\n", path)
@@ -285,13 +286,13 @@ func cmdConfigSet(args []string) int {
 }
 
 // ---------------------------------------------------------------------------
-// annotos check
+// aos check
 
 func cmdCheck(args []string) int {
-	fs := flag.NewFlagSet("annotos check", flag.ContinueOnError)
+	fs := flag.NewFlagSet("aos check", flag.ContinueOnError)
 	var b baseFlags
 	b.register(fs)
-	if ok, err := parseFlagSet(fs, args, "用法: annotos check [选项]\n\n诊断 TOS 连接与权限。"); !ok {
+	if ok, err := parseFlagSet(fs, args, "用法: aos check [选项]\n\n诊断 TOS 连接与权限。"); !ok {
 		return 2
 	} else if err != nil {
 		return 2
@@ -299,7 +300,7 @@ func cmdCheck(args []string) int {
 
 	cfg, path, err := b.loadConfig()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "annotos check: %v\n", err)
+		fmt.Fprintf(os.Stderr, "aos check: %v\n", err)
 		return 1
 	}
 	fmt.Printf("配置文件: %s\n", path)
@@ -367,50 +368,51 @@ func cmdCheck(args []string) int {
 // usage
 
 func printUsage(w *os.File) {
-	fmt.Fprintf(w, `annotos %s — 火山云 TOS 上传/下载/浏览工具
+	fmt.Fprintf(w, `aos %s — 对象存储上传/下载/浏览工具（当前后端：火山云 TOS）
 
 用法:
-  annotos ls <tos路径> [选项]            以目录树形式列出目标路径下的文件
-  annotos cp [选项]                      上传本地目录/文件到 TOS（记录到 sqlite）
-  annotos down [选项]                    下载（支持 -d/-spi/-id 定位，自动还原软链接）
-  annotos stat [选项]                    查询 cp 任务状态（done/break，含进度）
-  annotos restore [选项]                 手动还原软链接（down 已自动执行）
-  annotos check [选项]                   诊断连接与权限
-  annotos config [set] [选项]            查看/配置凭据
-  annotos version                        版本号
+  aos ls <tos路径> [选项]            以目录树形式列出目标路径下的文件
+  aos cp [选项]                      上传本地目录/文件到 TOS（记录到 sqlite；upload 为别名）
+  aos down [选项]                    下载（支持 -d/-spi/-id 定位，自动还原软链接；download/dl 为别名）
+  aos stat [选项]                    查询 cp 任务状态（done/break，含进度）
+  aos restore [选项]                 手动还原软链接（down 已自动执行）
+  aos check [选项]                   诊断连接与权限
+  aos config [set] [选项]            查看/配置凭据
+  aos version                        版本号
 
 ls 示例:
-  annotos ls tos://example-bucket/ACME2026001
-  annotos ls ACME2026001/PM-ACME2026001-01/matrix
+  aos ls tos://example-bucket/ACME2026001
+  aos ls ACME2026001/PM-ACME2026001-01/dataset
 
 cp 示例:
-  annotos cp -contract ACME2026001 -spi PM-ACME2026001-01 -d /path/project1/matrix
-  annotos cp -spi PM-ACME2026001-01 -d ./matrix        # -contract 自动推导
-  annotos cp -spi PM-ACME2026001-01 -d ./matrix -dry-run
+  aos cp -contract ACME2026001 -spi PM-ACME2026001-01 -d /path/project1/dataset
+  aos cp -spi PM-ACME2026001-01 -d ./dataset        # -contract 自动推导
+  aos cp -spi PM-ACME2026001-01 -d ./dataset -dry-run
 
 down 示例:
-  annotos down tos://example-bucket/ACME2026001/PM-ACME2026001-01/matrix -d /local
-  annotos down -spi PM-ACME2026001-01                  # 自动探测远端文件夹，存到 ./matrix/
-  annotos down -d /data/project1/matrix                     # 按 cp 时的路径回查任务，下载回该路径
-  annotos down -id 3 -d /local                              # 按任务 ID 下载
+  aos down tos://example-bucket/ACME2026001/PM-ACME2026001-01/dataset -d /local
+  aos down -spi PM-ACME2026001-01                  # 自动探测远端文件夹，存到 ./dataset/
+  aos down -d /data/project1/dataset                     # 按 cp 时的路径回查任务，下载回该路径
+  aos down -id 3 -d /local                              # 按任务 ID 下载
   # 下载完成后自动还原软链接（-no-restore 关闭）
 
 stat 示例:
-  annotos stat                                               # 最近任务列表
-  annotos stat -spi PM-ACME2026001-01                  # 某子项目所有任务
-  annotos stat -id 3                                         # 任务详情 + 软链接记录
+  aos stat                                               # 最近任务列表
+  aos stat -spi PM-ACME2026001-01                  # 某子项目所有任务
+  aos stat -id 3                                         # 任务详情 + 软链接记录
 
 restore 示例:
-  annotos restore -id 3 -d /local/matrix                    # 还原任务 3 的软链接到本地
+  aos restore -id 3 -d /local/dataset                    # 还原任务 3 的软链接到本地
 
 行为说明:
-  - cp 会把任务记录写入 sqlite（默认 ~/.annotos/annotos.db，-db/ANNOTOS_DB 可改）
+  - cp 任务记录写入 sqlite（默认 ~/.config/aos.db，-db/AOS_DB 可改）
+  - down 在下载根目录写入 .aos/manifest.db（按 object key + ETag 判断已完成，不比大小）
   - 本地软链接不溯源：上传同名文本文件，内容为链接目标地址；task_links 表记录以便还原
   - 路径自动规范化（./abc//de -> abc/de）
 
 配置说明:
-  配置文件默认位于 annotos 二进制同目录的 annotos.json，随二进制一起拷贝即可使用。
+  配置文件默认位于 aos 二进制同目录的 aos.json，随二进制一起拷贝即可使用。
   内网/专线环境用 endpoint tos-cn-beijing.ivolces.com；公网用 tos-cn-beijing.volces.com。
-  可用环境变量 ANNOTOS_AK / ANNOTOS_SK / ANNOTOS_ENDPOINT / ANNOTOS_REGION / ANNOTOS_BUCKET / ANNOTOS_DB 覆盖。
+  可用环境变量 AOS_AK / AOS_SK / AOS_ENDPOINT / AOS_REGION / AOS_BUCKET / AOS_DB 覆盖。
 `, version)
 }

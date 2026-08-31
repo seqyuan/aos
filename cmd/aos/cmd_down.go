@@ -6,19 +6,18 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"time"
 
-	"github.com/seqyuan/annotos/internal/db"
-	"github.com/seqyuan/annotos/internal/spi"
-	"github.com/seqyuan/annotos/internal/tosx"
+	"github.com/seqyuan/aos/internal/db"
+	"github.com/seqyuan/aos/internal/spi"
+	"github.com/seqyuan/aos/internal/tosx"
 )
 
-// cmdDown annotos down：下载 TOS 内容到当前目录或指定路径。
+// cmdDown aos down：下载 TOS 内容到当前目录或指定路径。
 // 支持：位置参数 tos 路径 / -spi [-contract] / -id <任务ID> / 仅 -d <cp时路径>。
 // 下载完成后若对应任务有软链接记录，自动把文本文件还原为 symlink。
 func cmdDown(args []string) int {
-	fs := flag.NewFlagSet("annotos down", flag.ContinueOnError)
+	fs := flag.NewFlagSet("aos down", flag.ContinueOnError)
 	var b baseFlags
 	b.register(fs)
 	contract := fs.String("contract", "", "项目合同号（可省略，从 -spi 推导）")
@@ -28,27 +27,27 @@ func cmdDown(args []string) int {
 	concurrency := fs.Int("concurrency", 0, "并发数（默认按 CPU 核数）")
 	overwrite := fs.Bool("overwrite", false, "覆盖本地已存在的同名文件（默认跳过）")
 	quiet := fs.Bool("q", false, "安静模式")
-	taskID := fs.Int64("id", 0, "按 sqlite 任务记录下载（用 annotos stat 查 ID）")
+	taskID := fs.Int64("id", 0, "按 sqlite 任务记录下载（用 aos stat 查 ID）")
 	dbPath := fs.String("db", "", "sqlite 数据库路径")
 	noRestore := fs.Bool("no-restore", false, "下载后不自动还原软链接")
-	if ok, err := parseFlagSet(fs, args, "用法: annotos down [tos路径] [选项]\n\n示例:\n  annotos down tos://example-bucket/ACME2026001/PM-ACME2026001-01/matrix -d /local\n  annotos down -spi PM-ACME2026001-01                # 自动探测远端文件夹，存到 ./matrix/\n  annotos down -d /data/project1/matrix                  # 按 cp 时记录的路径回查任务并下载回该路径\n  annotos down -id 3 -d /local                            # 按任务 ID 下载\n\n说明: 下载完成后若数据库有对应任务的软链接记录，会自动把下载的文本文件还原为 symlink\n      （内容与记录一致时；可用 -no-restore 关闭）"); !ok {
+	if ok, err := parseFlagSet(fs, args, "用法: aos down [tos路径] [选项]\n\n示例:\n  aos down tos://example-bucket/ACME2026001/PM-ACME2026001-01/dataset -d /local\n  aos down -spi PM-ACME2026001-01                # 自动探测远端文件夹，存到 ./dataset/\n  aos down -d /data/project1/dataset                  # 按 cp 时记录的路径回查任务并下载回该路径\n  aos down -id 3 -d /local                            # 按任务 ID 下载\n\n说明: 下载完成后若数据库有对应任务的软链接记录，会自动把下载的文本文件还原为 symlink\n      （内容与记录一致时；可用 -no-restore 关闭）"); !ok {
 		return 2
 	} else if err != nil {
 		return 2
 	}
 	tosPath := ""
 	if fs.NArg() > 1 {
-		fmt.Fprintln(os.Stderr, "annotos down: 最多 1 个位置参数（tos 路径）")
+		fmt.Fprintln(os.Stderr, "aos down: 最多 1 个位置参数（tos 路径）")
 		return 2
 	}
 	if fs.NArg() == 1 {
 		tosPath = fs.Arg(0)
 	}
 
-	// 需要数据库的模式：-id、仅 -d 回查
-	dbNeeded := *taskID > 0 || (tosPath == "" && *spiID == "" && *contract == "")
+	// 需要数据库：-id / 仅 -d 回查；以及自动还原软链接（除非 -no-restore）
+	lookupDB := *taskID > 0 || (tosPath == "" && *spiID == "" && *contract == "")
 	var database *db.DB
-	if dbNeeded {
+	if lookupDB || !*noRestore {
 		path := *dbPath
 		if path == "" {
 			if p, err := db.DefaultPath(); err == nil {
@@ -57,11 +56,15 @@ func cmdDown(args []string) int {
 		}
 		d, err := db.Open(path)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "annotos down: 无法打开数据库 %s: %v\n", path, err)
-			return 1
+			if lookupDB {
+				fmt.Fprintf(os.Stderr, "aos down: 无法打开数据库 %s: %v\n", path, err)
+				return 1
+			}
+			fmt.Fprintf(os.Stderr, "aos down: ⚠️ 无法打开数据库 %s，跳过自动还原: %v\n", path, err)
+		} else {
+			defer d.Close()
+			database = d
 		}
-		defer d.Close()
-		database = d
 	}
 
 	localDirExact := false
@@ -71,19 +74,19 @@ func cmdDown(args []string) int {
 	case *taskID > 0:
 		t, err := database.GetTask(*taskID)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "annotos down: %v\n", err)
+			fmt.Fprintf(os.Stderr, "aos down: %v\n", err)
 			return 1
 		}
 		fmt.Fprintf(os.Stderr, "任务 %d: %s (%s) 远端=%s\n", t.ID, t.Status, t.SPI, t.RemotePrefix)
 		if t.RemotePrefix == "" {
-			fmt.Fprintln(os.Stderr, "annotos down: 该任务没有记录远端路径（可能未真正上传）")
+			fmt.Fprintln(os.Stderr, "aos down: 该任务没有记录远端路径（可能未真正上传）")
 			return 1
 		}
 		tosPath = t.RemotePrefix
 	case *spiID != "" || *contract != "":
 		if *spiID != "" {
 			if err := spi.ValidateSPI(*spiID); err != nil {
-				fmt.Fprintf(os.Stderr, "annotos down: %v\n", err)
+				fmt.Fprintf(os.Stderr, "aos down: %v\n", err)
 				return 2
 			}
 		}
@@ -92,29 +95,29 @@ func cmdDown(args []string) int {
 		// 只给了 -d：按 cp 时记录的本地路径回查任务，下载回该路径
 		t, err := database.FindTaskByLocalPath(*local)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "annotos down: %v\n", err)
+			fmt.Fprintf(os.Stderr, "aos down: %v\n", err)
 			return 1
 		}
 		if t.RemotePrefix == "" {
-			fmt.Fprintf(os.Stderr, "annotos down: 任务 %d（%s）没有记录远端路径\n", t.ID, t.SPI)
+			fmt.Fprintf(os.Stderr, "aos down: 任务 %d（%s）没有记录远端路径\n", t.ID, t.SPI)
 			return 1
 		}
 		fmt.Fprintf(os.Stderr, "找到任务 %d（%s，状态 %s）: %s\n", t.ID, t.SPI, t.Status, t.RemotePrefix)
 		tosPath = t.RemotePrefix
 		localDirExact = true // 直接还原到 -d 路径本身
 	default:
-		fmt.Fprintln(os.Stderr, "annotos down: 必须提供 tos 路径、-contract/-spi、-id，或 -d（cp 时的本地路径）")
+		fmt.Fprintln(os.Stderr, "aos down: 必须提供 tos 路径、-contract/-spi、-id，或 -d（cp 时的本地路径）")
 		fs.Usage()
 		return 2
 	}
 
 	cfg, _, err := b.loadConfig()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "annotos down: %v\n", err)
+		fmt.Fprintf(os.Stderr, "aos down: %v\n", err)
 		return 1
 	}
 	if err := cfg.Validate(); err != nil {
-		fmt.Fprintf(os.Stderr, "annotos down: %v\n（运行 annotos config set 配置凭据）\n", err)
+		fmt.Fprintf(os.Stderr, "aos down: %v\n（运行 aos config set 配置凭据）\n", err)
 		return 1
 	}
 	ctx, cancel := newSignalCtx()
@@ -124,7 +127,7 @@ func cmdDown(args []string) int {
 
 	client, err := tosx.NewClient(cfg)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "annotos down: %v\n", err)
+		fmt.Fprintf(os.Stderr, "aos down: %v\n", err)
 		return 1
 	}
 
@@ -147,7 +150,7 @@ func cmdDown(args []string) int {
 	}
 
 	if err := tosx.Download(ctx, client, cfg, opt, os.Stdout); err != nil {
-		fmt.Fprintf(os.Stderr, "annotos down: %v\n", err)
+		fmt.Fprintf(os.Stderr, "aos down: %v\n", err)
 		return 1
 	}
 	return 0
@@ -166,7 +169,12 @@ func restoreLinksFromTask(database *db.DB, remotePrefix, localRoot string, w io.
 	created, skipped, mismatched := 0, 0, 0
 	fmt.Fprintf(w, "自动还原软链接（任务 %d %s，共 %d 条）:\n", t.ID, t.SPI, len(links))
 	for _, l := range links {
-		dest := filepath.Join(localRoot, filepath.FromSlash(l.LinkRel))
+		dest, err := tosx.SafeJoin(localRoot, l.LinkRel)
+		if err != nil {
+			fmt.Fprintf(w, "  - 跳过不安全路径 %q: %v\n", l.LinkRel, err)
+			skipped++
+			continue
+		}
 		data, err := os.ReadFile(dest)
 		if err != nil {
 			skipped++

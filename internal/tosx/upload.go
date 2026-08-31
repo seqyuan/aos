@@ -10,10 +10,10 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/seqyuan/annotos/internal/config"
-	"github.com/seqyuan/annotos/internal/human"
-	"github.com/seqyuan/annotos/internal/spi"
-	"github.com/seqyuan/annotos/internal/ui"
+	"github.com/seqyuan/aos/internal/config"
+	"github.com/seqyuan/aos/internal/human"
+	"github.com/seqyuan/aos/internal/spi"
+	"github.com/seqyuan/aos/internal/ui"
 	"github.com/volcengine/ve-tos-golang-sdk/v2/tos"
 )
 
@@ -59,9 +59,9 @@ func Upload(ctx context.Context, client *tos.ClientV2, cfg config.Config, opt Up
 		return err
 	}
 
-	// 2. 解析本地路径（支持相对路径，相对当前工作目录）
+	// 2. 解析本地路径（Lstat，不跟随软链接）
 	localPath := filepath.Clean(opt.LocalPath)
-	stat, err := os.Stat(localPath)
+	lstat, err := os.Lstat(localPath)
 	if err != nil {
 		return fmt.Errorf("无法访问本地路径 %s: %w", localPath, err)
 	}
@@ -77,20 +77,18 @@ func Upload(ctx context.Context, client *tos.ClientV2, cfg config.Config, opt Up
 
 	basePrefix := spi.TargetKey(contract, opt.SPI) + "/" + name
 
-	// 4. 收集待上传文件
+	// 4. 收集待上传文件。顶层软链接（含指向目录的）不溯源，上传同名文本。
 	var jobs []uploadJob
-	if !stat.IsDir() {
-		key := normalizeKey(basePrefix)
-		if isSymlink(localPath) {
-			if target, err := os.Readlink(localPath); err == nil {
-				jobs = append(jobs, uploadJob{key: key, linkTarget: target})
-			} else {
-				return fmt.Errorf("读取软链接 %s 失败: %w", localPath, err)
-			}
-		} else {
-			jobs = append(jobs, uploadJob{local: localPath, key: key})
+	switch {
+	case lstat.Mode()&os.ModeSymlink != 0:
+		target, err := os.Readlink(localPath)
+		if err != nil {
+			return fmt.Errorf("读取软链接 %s 失败: %w", localPath, err)
 		}
-	} else {
+		jobs = append(jobs, uploadJob{local: localPath, key: normalizeKey(basePrefix), linkTarget: target})
+	case !lstat.IsDir():
+		jobs = append(jobs, uploadJob{local: localPath, key: normalizeKey(basePrefix)})
+	default:
 		err := filepath.Walk(localPath, func(path string, info os.FileInfo, err error) error {
 			if err != nil {
 				return err
@@ -177,6 +175,9 @@ func Upload(ctx context.Context, client *tos.ClientV2, cfg config.Config, opt Up
 				}
 				rel := strings.TrimPrefix(j.key, basePrefix)
 				rel = strings.TrimPrefix(rel, "/")
+				if rel == "" {
+					rel = name
+				}
 				links = append(links, UploadLink{
 					LocalPath: rel,
 					Target:    j.linkTarget,
@@ -219,10 +220,19 @@ func Upload(ctx context.Context, client *tos.ClientV2, cfg config.Config, opt Up
 
 	var wg sync.WaitGroup
 	jobCh := make(chan uploadJob)
-	var errOnce sync.Once
+	var mu sync.Mutex
 	var firstErr error
 	reportErr := func(e error) {
-		errOnce.Do(func() { firstErr = e })
+		mu.Lock()
+		if firstErr == nil {
+			firstErr = e
+		}
+		mu.Unlock()
+	}
+	cancelled := func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return firstErr != nil
 	}
 
 	for i := 0; i < concurrency; i++ {
@@ -230,7 +240,7 @@ func Upload(ctx context.Context, client *tos.ClientV2, cfg config.Config, opt Up
 		go func() {
 			defer wg.Done()
 			for j := range jobCh {
-				if firstErr != nil {
+				if cancelled() {
 					continue
 				}
 				var err error
@@ -294,13 +304,13 @@ func isSymlink(path string) bool {
 	return err == nil && fi.Mode()&os.ModeSymlink != 0
 }
 
-// normalizeKey 规范化 TOS key：去掉空段与 "." 段，折叠连续 "/"。
-// 例如 "./abc//de/./f" -> "abc/de/f"。
+// normalizeKey 规范化 TOS key：去掉空段、"." 与 ".." 段，折叠连续 "/"。
+// 例如 "./abc//de/./f" -> "abc/de/f"；"a/../b" -> "a/b"（丢弃 ..，不向上跳出）。
 func normalizeKey(key string) string {
 	parts := strings.Split(key, "/")
 	out := parts[:0]
 	for _, p := range parts {
-		if p == "" || p == "." {
+		if p == "" || p == "." || p == ".." {
 			continue
 		}
 		out = append(out, p)
@@ -311,7 +321,7 @@ func normalizeKey(key string) string {
 // defaultSkip 内置默认跳过的文件/目录（可被 -exclude 追加，不冲突）。
 func defaultSkip(name string, isDir bool) bool {
 	switch name {
-	case ".git", ".DS_Store", ".annotos", ".svn", "__pycache__", ".ipynb_checkpoints":
+	case ".git", ".DS_Store", ".aos", ".svn", "__pycache__", ".ipynb_checkpoints":
 		return true
 	}
 	if strings.HasPrefix(name, "._") {

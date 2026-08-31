@@ -13,10 +13,11 @@ func TestParseTOSPath(t *testing.T) {
 		prefix  string
 		wantErr bool
 	}{
-		{"tos://example-bucket/ACME2026001/PM-x/matrix", "example-bucket", "ACME2026001/PM-x/matrix/", false},
+		{"tos://example-bucket/ACME2026001/PM-x/dataset", "example-bucket", "ACME2026001/PM-x/dataset/", false},
 		{"tos://example-bucket", "example-bucket", "", false},
 		{"example-bucket/ACME2026001", "example-bucket", "ACME2026001/", false},
-		{"ACME2026001/PM-x/matrix", "example-bucket", "ACME2026001/PM-x/matrix/", false},
+		{"ACME2026001/PM-x/dataset", "example-bucket", "ACME2026001/PM-x/dataset/", false},
+		{"tos://example-bucket/ACME2026001//dataset", "example-bucket", "ACME2026001/dataset/", false},
 		{"", "", "", true},
 	}
 	for _, c := range cases {

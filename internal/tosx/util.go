@@ -1,7 +1,9 @@
 package tosx
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -23,7 +25,7 @@ func statFile(path string) (os.FileInfo, error) {
 }
 
 func isNotExist(err error) bool {
-	return os.IsNotExist(err)
+	return errors.Is(err, fs.ErrNotExist)
 }
 
 // ExcludeMatch 判断 relPath 或 basename 是否命中任一排除规则（支持 * ? 通配）。

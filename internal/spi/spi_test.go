@@ -9,10 +9,10 @@ func TestDeriveContract(t *testing.T) {
 		wantErr  bool
 	}{
 		{"PM-ACME2026001-01", "ACME2026001", false},
-		{"ACME2026001-07", "", true}, // 缺 PM- 前缀
+		{"ACME2026001-01", "", true}, // 缺 PM- 前缀
 		{"PM-ACME2026001", "", true}, // 缺序号
-		{"PM-x-7", "x", false},            // 小写字母也允许
-		{"PM-ABC_123-07", "", true},       // 下划线不允许
+		{"PM-x-7", "x", false},       // 小写字母也允许
+		{"PM-ABC_123-07", "", true},  // 下划线不允许
 		{"", "", true},
 	}
 	for _, c := range cases {

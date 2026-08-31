@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/seqyuan/annotos/internal/human"
+	"github.com/seqyuan/aos/internal/human"
 )
 
 // Progress 并发安全的进度跟踪器。
@@ -95,10 +95,13 @@ func (p *Progress) printLine(name, line string) {
 		return
 	}
 	if p.tty {
+		p.mu.Lock()
 		if len(line) > p.lastLen {
 			p.lastLen = len(line)
 		}
-		fmt.Fprintf(p.w, "\r%s", padRight(line, p.lastLen))
+		n := p.lastLen
+		p.mu.Unlock()
+		fmt.Fprintf(p.w, "\r%s", padRight(line, n))
 		return
 	}
 	fmt.Fprintf(p.w, "  ✓ %s  (%s)\n", name, line)

@@ -7,18 +7,18 @@ import (
 	"strings"
 	"time"
 
-	"github.com/seqyuan/annotos/internal/db"
-	"github.com/seqyuan/annotos/internal/human"
+	"github.com/seqyuan/aos/internal/db"
+	"github.com/seqyuan/aos/internal/human"
 )
 
-// cmdStat annotos stat：查询 cp 任务状态（done/break，含进度）。
+// cmdStat aos stat：查询 cp 任务状态（done/break，含进度）。
 func cmdStat(args []string) int {
-	fs := flag.NewFlagSet("annotos stat", flag.ContinueOnError)
+	fs := flag.NewFlagSet("aos stat", flag.ContinueOnError)
 	spiFilter := fs.String("spi", "", "按 SPI 编号过滤")
 	taskID := fs.Int64("id", 0, "查看指定任务详情（含软链接记录）")
 	limit := fs.Int("limit", 20, "最多列出多少条")
-	dbPath := fs.String("db", "", "sqlite 数据库路径（默认 ~/.annotos/annotos.db）")
-	if ok, err := parseFlagSet(fs, args, "用法: annotos stat [选项]\n\n示例:\n  annotos stat                                      # 最近任务\n  annotos stat -spi PM-ACME2026001-01         # 某子项目任务\n  annotos stat -id 3                                # 任务详情 + 软链接记录"); !ok {
+	dbPath := fs.String("db", "", "sqlite 数据库路径（默认 ~/.config/aos.db）")
+	if ok, err := parseFlagSet(fs, args, "用法: aos stat [选项]\n\n示例:\n  aos stat                                      # 最近任务\n  aos stat -spi PM-ACME2026001-01         # 某子项目任务\n  aos stat -id 3                                # 任务详情 + 软链接记录"); !ok {
 		return 2
 	} else if err != nil {
 		return 2
@@ -32,7 +32,7 @@ func cmdStat(args []string) int {
 	}
 	database, err := db.Open(path)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "annotos stat: 无法打开数据库 %s: %v\n", path, err)
+		fmt.Fprintf(os.Stderr, "aos stat: 无法打开数据库 %s: %v\n", path, err)
 		return 1
 	}
 	defer database.Close()
@@ -46,7 +46,7 @@ func cmdStat(args []string) int {
 func statList(database *db.DB, dbPath, spiFilter string, limit int) int {
 	tasks, err := database.ListTasks(spiFilter, limit)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "annotos stat: %v\n", err)
+		fmt.Fprintf(os.Stderr, "aos stat: %v\n", err)
 		return 1
 	}
 	if len(tasks) == 0 {
@@ -78,14 +78,14 @@ func statList(database *db.DB, dbPath, spiFilter string, limit int) int {
 		fmt.Printf("%-4d %-26s %-8s %-18s %-13s %s\n",
 			t.ID, t.SPI, status, fileProgress, start, end)
 	}
-	fmt.Printf("\n数据库: %s（用 annotos stat -id <ID> 查看详情与软链接记录）\n", dbPath)
+	fmt.Printf("\n数据库: %s（用 aos stat -id <ID> 查看详情与软链接记录）\n", dbPath)
 	return 0
 }
 
 func statDetail(database *db.DB, dbPath string, id int64) int {
 	t, err := database.GetTask(id)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "annotos stat: %v\n", err)
+		fmt.Fprintf(os.Stderr, "aos stat: %v\n", err)
 		return 1
 	}
 	fmt.Printf("任务 %d  状态: %s\n", t.ID, t.Status)
@@ -113,7 +113,7 @@ func statDetail(database *db.DB, dbPath string, id int64) int {
 
 	links, err := database.GetLinks(id)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "annotos stat: %v\n", err)
+		fmt.Fprintf(os.Stderr, "aos stat: %v\n", err)
 		return 1
 	}
 	if len(links) > 0 {

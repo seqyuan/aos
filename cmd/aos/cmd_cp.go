@@ -9,14 +9,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/seqyuan/annotos/internal/db"
-	"github.com/seqyuan/annotos/internal/spi"
-	"github.com/seqyuan/annotos/internal/tosx"
+	"github.com/seqyuan/aos/internal/db"
+	"github.com/seqyuan/aos/internal/spi"
+	"github.com/seqyuan/aos/internal/tosx"
 )
 
-// cmdCP annotos cp：上传本地目录/文件到 TOS，并记录任务到 sqlite。
+// cmdCP aos cp：上传本地目录/文件到 TOS，并记录任务到 sqlite。
 func cmdCP(args []string) int {
-	fs := flag.NewFlagSet("annotos cp", flag.ContinueOnError)
+	fs := flag.NewFlagSet("aos cp", flag.ContinueOnError)
 	var b baseFlags
 	b.register(fs)
 	contract := fs.String("contract", "", "项目合同号，如 ACME2026001（可省略，从 -spi 推导）")
@@ -28,37 +28,35 @@ func cmdCP(args []string) int {
 	dryRun := fs.Bool("dry-run", false, "只打印计划，不实际上传")
 	exclude := fs.String("exclude", "", "排除规则，逗号分隔，支持通配符，如 *.tmp,.git")
 	quiet := fs.Bool("q", false, "安静模式")
-	dbPath := fs.String("db", "", "sqlite 数据库路径（默认 ~/.annotos/annotos.db）")
+	dbPath := fs.String("db", "", "sqlite 数据库路径（默认 ~/.config/aos.db）")
 	noRecord := fs.Bool("no-record", false, "不写入任务记录数据库")
-	if ok, err := parseFlagSet(fs, args, "用法: annotos cp -contract <合同号> -spi <SPI> -d <本地路径> [选项]\n\n示例:\n  annotos cp -contract ACME2026001 -spi PM-ACME2026001-01 -d /path/project1/matrix\n  annotos cp -spi PM-ACME2026001-01 -d ./matrix   # 自动推导 contract\n  annotos cp -spi PM-ACME2026001-01 -d matrix.zip -name matrix"); !ok {
+	if ok, err := parseFlagSet(fs, args, "用法: aos cp -spi <SPI> -d <本地路径> [选项]\n\n示例:\n  aos cp -contract ACME2026001 -spi PM-ACME2026001-01 -d /path/project1/dataset\n  aos cp -spi PM-ACME2026001-01 -d ./dataset   # 自动推导 contract\n  aos cp -spi PM-ACME2026001-01 -d dataset.zip -name dataset"); !ok {
 		return 2
 	} else if err != nil {
 		return 2
 	}
 	if *local == "" {
-		fmt.Fprintln(os.Stderr, "annotos cp: 缺少 -d 参数（本地路径）")
+		fmt.Fprintln(os.Stderr, "aos cp: 缺少 -d 参数（本地路径）")
 		fs.Usage()
 		return 2
 	}
-	if *contract == "" && *spiID == "" {
-		fmt.Fprintln(os.Stderr, "annotos cp: 必须提供 -contract 或 -spi 参数")
+	if *spiID == "" {
+		fmt.Fprintln(os.Stderr, "aos cp: 必须提供 -spi 参数")
 		fs.Usage()
 		return 2
 	}
-	if *spiID != "" {
-		if err := spi.ValidateSPI(*spiID); err != nil {
-			fmt.Fprintf(os.Stderr, "annotos cp: %v\n", err)
-			return 2
-		}
+	if err := spi.ValidateSPI(*spiID); err != nil {
+		fmt.Fprintf(os.Stderr, "aos cp: %v\n", err)
+		return 2
 	}
 
 	cfg, _, err := b.loadConfig()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "annotos cp: %v\n", err)
+		fmt.Fprintf(os.Stderr, "aos cp: %v\n", err)
 		return 1
 	}
 	if err := cfg.Validate(); err != nil {
-		fmt.Fprintf(os.Stderr, "annotos cp: %v\n（运行 annotos config set 配置凭据）\n", err)
+		fmt.Fprintf(os.Stderr, "aos cp: %v\n（运行 aos config set 配置凭据）\n", err)
 		return 1
 	}
 	ctx, cancel := newSignalCtx()
@@ -68,7 +66,7 @@ func cmdCP(args []string) int {
 
 	client, err := tosx.NewClient(cfg)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "annotos cp: %v\n", err)
+		fmt.Fprintf(os.Stderr, "aos cp: %v\n", err)
 		return 1
 	}
 	var excludes []string
@@ -102,16 +100,16 @@ func cmdCP(args []string) int {
 		}
 		rec, err := newUploadRecorder(path, opt)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "annotos cp: ⚠️ 无法打开任务数据库 %s: %v\n", path, err)
-			fmt.Fprintln(os.Stderr, "annotos cp: 继续上传但本次不记录（可用 -no-record 显式跳过）")
-		} else {
-			defer rec.close()
-			opt.Recorder = rec
+			fmt.Fprintf(os.Stderr, "aos cp: 无法打开任务数据库 %s: %v\n", path, err)
+			fmt.Fprintln(os.Stderr, "aos cp: 可用 -no-record 显式跳过记录后重试")
+			return 1
 		}
+		defer rec.close()
+		opt.Recorder = rec
 	}
 
 	if err := tosx.Upload(ctx, client, cfg, opt, os.Stdout); err != nil {
-		fmt.Fprintf(os.Stderr, "annotos cp: %v\n", err)
+		fmt.Fprintf(os.Stderr, "aos cp: %v\n", err)
 		return 1
 	}
 	return 0
@@ -135,16 +133,16 @@ func newUploadRecorder(path string, opt tosx.UploadOptions) (*uploadRecorder, er
 			contract = c
 		}
 	}
-	rec, err := db.NewRecorder(database, db.Task{
+	localStored := filepath.Clean(opt.LocalPath)
+	if abs, err := filepath.Abs(opt.LocalPath); err == nil {
+		localStored = abs
+	}
+	rec := db.NewRecorder(database, db.Task{
 		SPI:       opt.SPI,
 		Contract:  contract,
-		LocalPath: filepath.Clean(opt.LocalPath),
+		LocalPath: localStored,
 		Status:    "running",
 	})
-	if err != nil {
-		database.Close()
-		return nil, err
-	}
 	return &uploadRecorder{database: database, rec: rec}, nil
 }
 
@@ -155,11 +153,7 @@ func (u *uploadRecorder) close() {
 }
 
 func (u *uploadRecorder) OnTaskBegin(remotePrefix string, totalFiles int, totalBytes int64, linkCount int) (int64, error) {
-	// db.Recorder 在构造时已建任务，这里补充总量信息
-	if err := u.database.UpdateTaskMeta(u.rec.TaskID(), remotePrefix, int64(totalFiles), totalBytes, int64(linkCount)); err != nil {
-		return u.rec.TaskID(), err
-	}
-	return u.rec.TaskID(), nil
+	return u.rec.Begin(remotePrefix, int64(totalFiles), totalBytes, int64(linkCount))
 }
 
 func (u *uploadRecorder) OnLinks(taskID int64, links []tosx.UploadLink) error {

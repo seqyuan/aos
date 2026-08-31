@@ -1,8 +1,8 @@
-// Package config 负责加载/保存 annotos 的 TOS 连接配置。
+// Package config 负责加载/保存 aos 的对象存储连接配置。
 //
-// 配置文件默认放在 annotos 二进制所在目录下的 annotos.json，
+// 配置文件默认放在 aos 二进制所在目录下的 aos.json，
 // 这样用户拷贝整个二进制(连同 json)到任何机器都能直接使用。
-// 可用 -config 参数或环境变量 ANNOTOS_CONFIG 指定其它路径。
+// 可用 -config 参数或环境变量 AOS_CONFIG 指定其它路径。
 package config
 
 import (
@@ -14,7 +14,7 @@ import (
 )
 
 // DefaultFileName 默认配置文件名字（放在可执行文件同目录）。
-const DefaultFileName = "annotos.json"
+const DefaultFileName = "aos.json"
 
 // 默认值：火山云 TOS 北京区域。
 const (
@@ -22,7 +22,7 @@ const (
 	DefaultRegion   = "cn-beijing"
 )
 
-// Config TOS 连接配置。
+// Config 对象存储连接配置（当前后端为火山云 TOS）。
 type Config struct {
 	Endpoint  string `json:"endpoint"`          // 例如 tos-cn-beijing.volces.com
 	Region    string `json:"region"`            // 例如 cn-beijing
@@ -53,14 +53,14 @@ func (c Config) EndpointOrDefault() string {
 
 // ResolvePath 解析配置文件路径，优先级：
 //  1. 命令行 -config 参数
-//  2. 环境变量 ANNOTOS_CONFIG
-//  3. 可执行文件同目录下的 annotos.json（用户拷贝二进制+json 即可使用）
-//  4. 当前工作目录下的 annotos.json（便于开发调试）
+//  2. 环境变量 AOS_CONFIG
+//  3. 可执行文件同目录下的 aos.json（用户拷贝二进制+json 即可使用）
+//  4. 当前工作目录下的 aos.json（便于开发调试）
 func ResolvePath(override string) (string, error) {
 	if override != "" {
 		return override, nil
 	}
-	if env := os.Getenv("ANNOTOS_CONFIG"); env != "" {
+	if env := os.Getenv("AOS_CONFIG"); env != "" {
 		return env, nil
 	}
 
@@ -90,7 +90,7 @@ func ResolvePath(override string) (string, error) {
 }
 
 // Load 从指定路径加载配置；文件不存在时返回带默认值的空配置。
-// 同时允许用环境变量 ANNOTOS_* 覆盖任意字段（便于 CI 使用）。
+// 同时允许用环境变量 AOS_* 覆盖任意字段（便于 CI 使用）。
 func Load(path string) (Config, error) {
 	cfg := Default()
 	data, err := os.ReadFile(path)
@@ -116,19 +116,19 @@ func Load(path string) (Config, error) {
 }
 
 func applyEnvOverrides(cfg *Config) {
-	if v := os.Getenv("ANNOTOS_ENDPOINT"); v != "" {
+	if v := os.Getenv("AOS_ENDPOINT"); v != "" {
 		cfg.Endpoint = v
 	}
-	if v := os.Getenv("ANNOTOS_REGION"); v != "" {
+	if v := os.Getenv("AOS_REGION"); v != "" {
 		cfg.Region = v
 	}
-	if v := os.Getenv("ANNOTOS_BUCKET"); v != "" {
+	if v := os.Getenv("AOS_BUCKET"); v != "" {
 		cfg.Bucket = v
 	}
-	if v := os.Getenv("ANNOTOS_AK"); v != "" {
+	if v := os.Getenv("AOS_AK"); v != "" {
 		cfg.AccessKey = v
 	}
-	if v := os.Getenv("ANNOTOS_SK"); v != "" {
+	if v := os.Getenv("AOS_SK"); v != "" {
 		cfg.SecretKey = v
 	}
 }

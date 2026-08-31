@@ -1,4 +1,4 @@
-// Package tosx 封装火山云 TOS SDK，提供 annotos 需要的客户端与便捷方法。
+// Package tosx 封装火山云 TOS SDK，提供 aos 需要的客户端与便捷方法。
 package tosx
 
 import (
@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/seqyuan/annotos/internal/config"
+	"github.com/seqyuan/aos/internal/config"
 	"github.com/volcengine/ve-tos-golang-sdk/v2/tos"
 )
 
@@ -72,19 +72,16 @@ func UploadOne(ctx context.Context, client *tos.ClientV2, bucket, key, localPath
 }
 
 // DownloadOne 下载单个对象到本地文件。
-func DownloadOne(ctx context.Context, client *tos.ClientV2, bucket, key, localPath string) error {
-	stat, err := statFile(localPath)
-	if err == nil && stat.Size() < smallFileThreshold {
+// size 为远端对象大小，用于选择单次 GET 还是分片下载（不依赖本地 dest 是否存在）。
+func DownloadOne(ctx context.Context, client *tos.ClientV2, bucket, key, localPath string, size int64) error {
+	if size < smallFileThreshold {
 		_, err := client.GetObjectToFile(ctx, &tos.GetObjectToFileInput{
 			GetObjectV2Input: tos.GetObjectV2Input{Bucket: bucket, Key: key},
 			FilePath:         localPath,
 		})
 		return FriendlyError(err)
 	}
-	if err != nil && !isNotExist(err) {
-		return err
-	}
-	_, err = client.DownloadFile(ctx, &tos.DownloadFileInput{
+	_, err := client.DownloadFile(ctx, &tos.DownloadFileInput{
 		HeadObjectV2Input: tos.HeadObjectV2Input{Bucket: bucket, Key: key},
 		FilePath:          localPath,
 		PartSize:          defaultPartSize,
@@ -110,11 +107,11 @@ func FriendlyError(err error) error {
 	msg := err.Error()
 	switch {
 	case strings.Contains(msg, "Access Denied") || strings.Contains(msg, "AccessDenied"):
-		return fmt.Errorf("TOS 访问被拒绝（Access Denied）。请确认账号对 bucket 具备相应权限（IAM 策略或桶策略），或运行 annotos check 诊断: %w", err)
+		return fmt.Errorf("TOS 访问被拒绝（Access Denied）。请确认账号对 bucket 具备相应权限（IAM 策略或桶策略），或运行 aos check 诊断: %w", err)
 	case strings.Contains(msg, "does not exist"):
 		return fmt.Errorf("目标 bucket 或对象不存在，请检查 bucket 名称与 region 是否匹配: %w", err)
 	case strings.Contains(msg, "InvalidAccessKeyId") || strings.Contains(msg, "SignatureDoesNotMatch"):
-		return fmt.Errorf("AccessKey / SecretKey 无效或不匹配，请检查配置（annotos config 查看）: %w", err)
+		return fmt.Errorf("AccessKey / SecretKey 无效或不匹配，请检查配置（aos config 查看）: %w", err)
 	default:
 		return err
 	}

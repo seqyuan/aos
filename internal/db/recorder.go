@@ -1,10 +1,11 @@
 package db
 
 import (
+	"path/filepath"
 	"sync"
 	"time"
 
-	"github.com/seqyuan/annotos/internal/tosx"
+	"github.com/seqyuan/aos/internal/tosx"
 )
 
 // Recorder 实现 tosx.UploadRecorder，把 cp 任务进度写入 SQLite。
@@ -20,16 +21,27 @@ type Recorder struct {
 	failed    int64
 	lastFlush time.Time
 	pending   int
+	flushing  bool
 	closed    bool
 }
 
-// NewRecorder 创建记录器（任务开始前调用，task 需含 SPI/Contract/LocalPath/RemotePrefix/总量）。
-func NewRecorder(d *DB, task Task) (*Recorder, error) {
-	id, err := d.CreateTask(task)
+// NewRecorder 创建记录器。任务行在 Begin 时才插入（walk 完成、总量已知之后）。
+func NewRecorder(d *DB, task Task) *Recorder {
+	return &Recorder{db: d, task: task, lastFlush: time.Now()}
+}
+
+// Begin 在总量已知后插入任务行。
+func (r *Recorder) Begin(remotePrefix string, totalFiles, totalBytes, linkCount int64) (int64, error) {
+	r.task.RemotePrefix = remotePrefix
+	r.task.TotalFiles = totalFiles
+	r.task.TotalBytes = totalBytes
+	r.task.LinkCount = linkCount
+	id, err := r.db.CreateTask(r.task)
 	if err != nil {
-		return nil, err
+		return 0, err
 	}
-	return &Recorder{db: d, task: task, taskID: id, lastFlush: time.Now()}, nil
+	r.taskID = id
+	return id, nil
 }
 
 // TaskID 返回任务 ID。
@@ -46,7 +58,10 @@ func (r *Recorder) Progress(doneFiles, doneBytes, failedFiles int64) {
 	r.failed += failedFiles
 	r.pending++
 	now := time.Now()
-	flush := now.Sub(r.lastFlush) >= 250*time.Millisecond || r.pending >= 50
+	flush := !r.flushing && (now.Sub(r.lastFlush) >= 250*time.Millisecond || r.pending >= 50)
+	if flush {
+		r.flushing = true
+	}
 	r.mu.Unlock()
 	if flush {
 		r.flush()
@@ -55,6 +70,9 @@ func (r *Recorder) Progress(doneFiles, doneBytes, failedFiles int64) {
 
 // Finish 结束任务。
 func (r *Recorder) Finish(status, errMsg string) error {
+	if r.taskID == 0 {
+		return nil
+	}
 	r.flush()
 	r.mu.Lock()
 	r.closed = true
@@ -64,12 +82,24 @@ func (r *Recorder) Finish(status, errMsg string) error {
 
 func (r *Recorder) flush() {
 	r.mu.Lock()
+	if r.taskID == 0 {
+		r.flushing = false
+		r.mu.Unlock()
+		return
+	}
 	done, bytes, failed := r.done, r.bytes, r.failed
 	r.lastFlush = time.Now()
+	r.pending = 0
 	r.mu.Unlock()
 	if err := r.db.UpdateProgress(r.taskID, done, bytes, failed); err != nil {
-		// 进度写库失败不阻塞上传
 		_ = err
+	}
+	r.mu.Lock()
+	r.flushing = false
+	again := r.pending > 0 && !r.closed
+	r.mu.Unlock()
+	if again {
+		r.flush()
 	}
 }
 
@@ -78,7 +108,7 @@ func NewTaskFromUpload(opt tosx.UploadOptions, contract, remotePrefix string, to
 	return Task{
 		SPI:          opt.SPI,
 		Contract:     contract,
-		LocalPath:    opt.LocalPath,
+		LocalPath:    filepath.Clean(opt.LocalPath),
 		RemotePrefix: remotePrefix,
 		TotalFiles:   totalFiles,
 		TotalBytes:   totalBytes,

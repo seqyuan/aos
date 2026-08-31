@@ -9,10 +9,11 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/seqyuan/annotos/internal/config"
-	"github.com/seqyuan/annotos/internal/human"
-	"github.com/seqyuan/annotos/internal/spi"
-	"github.com/seqyuan/annotos/internal/ui"
+	"github.com/seqyuan/aos/internal/config"
+	"github.com/seqyuan/aos/internal/human"
+	"github.com/seqyuan/aos/internal/manifest"
+	"github.com/seqyuan/aos/internal/spi"
+	"github.com/seqyuan/aos/internal/ui"
 	"github.com/volcengine/ve-tos-golang-sdk/v2/tos"
 )
 
@@ -92,35 +93,62 @@ func Download(ctx context.Context, client *tos.ClientV2, cfg config.Config, opt 
 	if opt.LocalDirExact {
 		localRoot = opt.LocalDir
 	}
+	if localRoot == "" {
+		localRoot = "."
+	}
+
+	man, err := manifest.Open(localRoot)
+	if err != nil {
+		return fmt.Errorf("打开下载清单失败: %w", err)
+	}
+	defer man.Close()
+	done, err := man.Completed()
+	if err != nil {
+		return fmt.Errorf("读取下载清单失败: %w", err)
+	}
+
 	var totalBytes int64
 	type dlJob struct {
 		key  string
 		dest string
+		rel  string
+		etag string
 		size int64
 	}
 	var jobs []dlJob
 	for _, o := range files {
 		rel := strings.TrimPrefix(o.Key, remotePrefix)
-		dest := filepath.Join(localRoot, filepath.FromSlash(rel))
-		jobs = append(jobs, dlJob{key: o.Key, dest: dest, size: o.Size})
+		if rel == "" {
+			rel = filepath.Base(strings.TrimSuffix(o.Key, "/"))
+		}
+		dest, err := SafeJoin(localRoot, rel)
+		if err != nil {
+			return fmt.Errorf("对象 key 不安全 %s: %w", o.Key, err)
+		}
+		jobs = append(jobs, dlJob{key: o.Key, dest: dest, rel: rel, etag: o.ETag, size: o.Size})
 		totalBytes += o.Size
 	}
 
 	fmt.Fprintf(w, "下载 %d 个文件（共 %s）到 %s\n", len(jobs), human.Size(totalBytes), localRoot)
 
-	// 跳过已存在（大小相同）的文件
 	toDo := jobs[:0]
+	var skipBytes int64
 	for _, j := range jobs {
-		if st, err := os.Stat(j.dest); err == nil {
-			if st.Size() == j.size && !opt.Overwrite {
-				fmt.Fprintf(w, "  跳过（已存在）%s\n", j.dest)
-				continue
-			}
+		if skipCompleted(opt.Overwrite, done[j.key], j.etag, j.dest) {
+			fmt.Fprintf(w, "  跳过（已完成）%s\n", j.dest)
+			skipBytes += j.size
+			continue
 		}
 		toDo = append(toDo, j)
 	}
+	callOnCompleted := func() {
+		if opt.OnCompleted != nil {
+			opt.OnCompleted(strings.TrimSuffix(remotePrefix, "/"), localRoot)
+		}
+	}
 	if len(toDo) == 0 {
-		fmt.Fprintf(w, "所有文件已存在，无需下载 ✅\n")
+		fmt.Fprintf(w, "所有文件已在清单中，无需下载 ✅\n")
+		callOnCompleted()
 		return nil
 	}
 
@@ -128,7 +156,7 @@ func Download(ctx context.Context, client *tos.ClientV2, cfg config.Config, opt 
 	if concurrency <= 0 {
 		concurrency = defaultConcurrency()
 	}
-	progress := ui.NewProgress(len(toDo), totalBytes, opt.Quiet, w)
+	progress := ui.NewProgress(len(toDo), totalBytes-skipBytes, opt.Quiet, w)
 	progress.Start()
 
 	var wg sync.WaitGroup
@@ -142,13 +170,18 @@ func Download(ctx context.Context, client *tos.ClientV2, cfg config.Config, opt 
 		}
 		mu.Unlock()
 	}
+	cancelled := func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return firstErr != nil
+	}
 
 	for i := 0; i < concurrency; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for j := range jobCh {
-				if firstErr != nil {
+				if cancelled() {
 					continue
 				}
 				if err := os.MkdirAll(filepath.Dir(j.dest), 0o755); err != nil {
@@ -156,10 +189,15 @@ func Download(ctx context.Context, client *tos.ClientV2, cfg config.Config, opt 
 					progress.Fail(j.key, err)
 					continue
 				}
-				if err := DownloadOne(ctx, client, cfg.Bucket, j.key, j.dest); err != nil {
+				if err := DownloadOne(ctx, client, cfg.Bucket, j.key, j.dest, j.size); err != nil {
 					reportErr(err)
 					progress.Fail(j.key, err)
 				} else {
+					if err := man.MarkDone(manifest.Object{Key: j.key, ETag: j.etag, Rel: j.rel, Size: j.size}); err != nil {
+						reportErr(err)
+						progress.Fail(j.key, err)
+						continue
+					}
 					progress.Done(j.key, j.size)
 				}
 			}
@@ -176,10 +214,20 @@ func Download(ctx context.Context, client *tos.ClientV2, cfg config.Config, opt 
 		return fmt.Errorf("下载失败: %w", firstErr)
 	}
 	fmt.Fprintf(w, "下载完成 ✅\n")
-	if opt.OnCompleted != nil {
-		opt.OnCompleted(strings.TrimSuffix(remotePrefix, "/"), localRoot)
-	}
+	callOnCompleted()
 	return nil
+}
+
+// skipCompleted 清单中有相同 ETag 且本地目标仍存在时跳过。不比较文件大小。
+func skipCompleted(overwrite bool, recordedETag, remoteETag, dest string) bool {
+	if overwrite {
+		return false
+	}
+	if recordedETag == "" || recordedETag != manifest.NormalizeETag(remoteETag) {
+		return false
+	}
+	_, err := os.Lstat(dest)
+	return err == nil
 }
 
 // detectRemoteName 列出 contract/spi/ 下的一级子项，若只有一个非目录占位子项则返回其名字。

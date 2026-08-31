@@ -1,4 +1,4 @@
-module github.com/seqyuan/annotos
+module github.com/seqyuan/aos
 
 go 1.26.5
 

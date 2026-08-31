@@ -7,11 +7,13 @@ func TestNormalizeKey(t *testing.T) {
 		in   string
 		want string
 	}{
-		{"ACME2026001/PM-x-07/matrix/a.txt", "ACME2026001/PM-x-07/matrix/a.txt"},
+		{"ACME2026001/PM-ACME2026001-01/dataset/a.txt", "ACME2026001/PM-ACME2026001-01/dataset/a.txt"},
 		{"./abc//de/./f", "abc/de/f"},
 		{"abc//de", "abc/de"},
 		{"a/./b", "a/b"},
 		{".//abc/de", "abc/de"},
+		{"a/../b", "a/b"},
+		{"../etc/passwd", "etc/passwd"},
 		{"//", ""},
 	}
 	for _, c := range cases {
