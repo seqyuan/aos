@@ -54,6 +54,37 @@ func LS(ctx context.Context, client *tos.ClientV2, cfg config.Config, opt LSOpti
 		return err
 	}
 
+	// 目录前缀列不到对象时回退到精确对象 key（单文件上传/顶层软链接上传，对象 key 无尾斜杠）
+	if len(objs) == 0 && tp.Prefix != "" {
+		exactKey := strings.TrimSuffix(tp.Prefix, "/")
+		if exactKey != "" {
+			if exactObjs, err := ListAll(ctx, client, tp.Bucket, exactKey); err == nil {
+				for _, o := range exactObjs {
+					if o.Key == exactKey && !(strings.HasSuffix(o.Key, "/") && o.Size == 0) {
+						objs = []tos.ListedObjectV2{o}
+						break
+					}
+				}
+			}
+		}
+	}
+	// 单文件模式：直接打印该对象，不套目录树
+	if len(objs) == 1 && objs[0].Key == strings.TrimSuffix(tp.Prefix, "/") {
+		o := objs[0]
+		base := o.Key
+		if idx := strings.LastIndex(base, "/"); idx >= 0 {
+			base = base[idx+1:]
+		}
+		fmt.Fprintf(w, "tos://%s/%s\n", tp.Bucket, o.Key)
+		line := fmt.Sprintf("└── %s  (%s)", base, human.Size(o.Size))
+		if opt.ShowMod {
+			line += fmt.Sprintf("  %s", o.LastModified.Format("2006-01-02 15:04"))
+		}
+		fmt.Fprintln(w, line)
+		fmt.Fprintf(w, "\n1 个文件, 0 个目录, 共 %s\n", human.Size(o.Size))
+		return nil
+	}
+
 	root := newDir(strings.TrimSuffix(tp.Prefix, "/"))
 	if root.name == "" {
 		root.name = "/"

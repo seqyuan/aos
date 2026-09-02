@@ -20,6 +20,7 @@ type Progress struct {
 	totalBytes int64
 	doneBytes  int64
 	failed     int
+	skipped    int
 	start      time.Time
 	quiet      bool
 	tty        bool
@@ -72,6 +73,14 @@ func (p *Progress) Fail(name string, err error) {
 	}
 }
 
+// Skip 记录一个因任务已取消而未执行的文件（仅计数，不逐行打印，避免刷屏）。
+// 与 Fail 区分：未执行不等于失败。
+func (p *Progress) Skip(name string) {
+	p.mu.Lock()
+	p.skipped++
+	p.mu.Unlock()
+}
+
 // Finish 结束并打印汇总。
 func (p *Progress) Finish() {
 	p.mu.Lock()
@@ -84,6 +93,9 @@ func (p *Progress) Finish() {
 			p.done, p.total, human.Size(p.doneBytes), time.Since(p.start).Round(time.Second))
 		if p.failed > 0 {
 			fmt.Fprintf(p.w, ", 失败 %d 个", p.failed)
+		}
+		if p.skipped > 0 {
+			fmt.Fprintf(p.w, ", 跳过 %d 个（未执行）", p.skipped)
 		}
 		fmt.Fprintln(p.w)
 	}

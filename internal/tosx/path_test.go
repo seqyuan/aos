@@ -1,22 +1,10 @@
 package tosx
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 )
-
-func TestIsNotExistUnwraps(t *testing.T) {
-	_, err := os.Stat(filepath.Join(t.TempDir(), "missing"))
-	if !isNotExist(err) {
-		t.Fatal("raw ErrNotExist should match")
-	}
-	wrapped := fmt.Errorf("无法访问本地文件 x: %w", err)
-	if !isNotExist(wrapped) {
-		t.Fatal("wrapped ErrNotExist should match via errors.Is")
-	}
-}
 
 func TestSafeJoin(t *testing.T) {
 	root := t.TempDir()
@@ -69,7 +57,7 @@ func TestSkipCompleted(t *testing.T) {
 		t.Skipf("无法创建软链接: %v", err)
 	}
 	if !skipCompleted(false, "t", "t", link) {
-		t.Fatal("restored symlink with matching etag should skip")
+		t.Fatal("本地为软链接时同样应跳过（Lstat 存在即可）")
 	}
 	missing := filepath.Join(dir, "nope")
 	if skipCompleted(false, "t", "t", missing) {

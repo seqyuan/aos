@@ -4,12 +4,10 @@
 
 ## 特性
 
+- **`cp`**：上传 / 下载统一命令，方向由位置参数顺序决定（云上路径带 `tos://` 前缀，与 tosutil 心智一致）
 - **`ls`**：以目录树形式列出目标路径下的文件（带大小、数量统计）
-- **`cp`**（别名 `upload`）：上传本地目录/文件到 `<bucket>/<contract>/<spi>/<名称>/`，支持并发、排除规则、大文件分片 checkpoint，并记录任务到 **SQLite**
-- **`down`**（别名 `download` / `dl`）：下载到本地，支持按 `-d`（cp 时的路径）/`-id`/`-spi` 定位，下载后**自动还原软链接**。进度写在下载目录 `.aos/manifest.db`（key + ETag），可用 `-concurrency` 控制并发
-- **`stat`**：查询 cp 任务状态（done/break，含文件/字节进度）；`-id` 查看详情与软链接记录
-- **`restore`**：单独的软链接还原命令（`down` 已自动执行，此命令用于手动重跑）
-- **`check`**：连接与权限诊断（自动尝试公网 endpoint 回退）
+- **`stat`**：查询传输历史（上传/下载均记录；默认只显示中断/失败与近 2 天的任务，`-a` 显示全部）；`-id` 查看单次任务详情
+- **`check`**：连接与权限诊断（按 region 自动尝试公网 endpoint 回退）
 - **`config`**：查看 / 配置凭据
 
 ## 快速开始
@@ -27,28 +25,35 @@ go build -o aos ./cmd/aos
 
 # 查看目录树
 ./aos ls tos://example-bucket/ACME2026001
-./aos ls ACME2026001/PM-ACME2026001-01/dataset
+./aos ls tos:///ACME2026001/PM-ACME2026001-01/dataset    # tos:/// 前缀用配置默认 bucket
 
-# 上传（-contract 可省略，自动从 -spi 推导）
-./aos cp -contract ACME2026001 -spi PM-ACME2026001-01 -d /path/project1/dataset
-./aos cp -spi PM-ACME2026001-01 -d ./dataset
+# 上传：本地在前，目标为 tos:// 前缀（目录默认递归，内容直接铺入目标前缀）
+./aos cp /path/project1/dataset tos://example-bucket/ACME2026001/PM-ACME2026001-01/dataset
+./aos cp ./dataset tos:///ACME2026001/PM-ACME2026001-01/dataset
 
-# 下载（支持直接 tos 路径，-d 省略时默认存到 ./<远端文件夹名>）
-./aos down tos://example-bucket/ACME2026001/PM-ACME2026001-01/dataset -d /local/path
-./aos down -spi PM-ACME2026001-01                 # 自动探测远端文件夹
-./aos down -d /data/project1/dataset              # 按 cp 时的路径回查任务并下载回该路径
-./aos down -id 3 -d /local/path                   # 按任务 ID 下载（aos stat 查 ID）
+# 单文件上传（目标末段即对象 key）
+./aos cp dataset.zip tos://example-bucket/ACME2026001/PM-ACME2026001-01/dataset.zip
+
+# 下载：tos 在前，目标为本地目录（源前缀下的对象按相对路径落盘）
+./aos cp tos://example-bucket/ACME2026001/PM-ACME2026001-01/dataset /local/path
+./aos cp tos://example-bucket/ACME2026001/PM-ACME2026001-01/dataset   # 省略目标 = 当前目录
+
+# 还原上次上传的数据（单参数本地路径，自动按上传记录下载回原路径）
+./aos cp /data/project1/dataset
 
 # 任务状态
-./aos stat                                        # 最近任务列表
-./aos stat -id 3                                  # 任务详情 + 软链接记录
+./aos stat                                      # 中断/失败 + 近 2 天的任务
+./aos stat -a                                   # 全部任务
+./aos stat -id 3                                # 某次任务的详情（错误信息等）
+./aos stat -limit 50                            # 最多列出 50 条
 
-# down 下载完成后会自动把软链接文本文件还原为 symlink（-no-restore 关闭）；
-# 也可手动重跑: aos restore -id 3 -d /local/dataset
-./aos cp -spi PM-ACME2026001-01 -d dataset.zip -name dataset   # 压缩包传到 dataset 名下
+`stat` 列表列：ID / 方向（up 上传、down 下载）/ 状态 / 文件进度 / 开始时间 / 完成或状态 / 路径（上传=本地路径，下载=tos 源路径）。
 
 # 诊断连接与权限
 ./aos check
+
+# 版本号
+./aos version
 ```
 
 示例中的合同号 `ACME2026001`、子项目编号 `PM-ACME2026001-01`、bucket `example-bucket` 均为虚构，请换成实际值。
@@ -70,7 +75,8 @@ go build -o aos ./cmd/aos
 - **endpoint 说明**：
   - 内网 / 专线环境：`tos-cn-beijing.ivolces.com`（走火山云 VPC 内网，公网不可达）
   - 公网环境：`tos-cn-beijing.volces.com`
-- 修改配置：`./aos config set -ak AKLT... -sk WXpa... [-endpoint ...] [-bucket ...]`
+- 修改配置：`./aos config set -ak AKLT... -sk WXpa... [-endpoint ...] [-region ...] [-bucket ...]`
+- 查看配置文件实际路径：`./aos config path`
 - 可用环境变量覆盖（便于 CI）：`AOS_AK` / `AOS_SK` / `AOS_ENDPOINT` / `AOS_REGION` / `AOS_BUCKET`，或 `AOS_CONFIG` 指定配置文件路径
 - 单次命令覆盖：`-endpoint` / `-region` / `-bucket` 参数
 
@@ -79,63 +85,75 @@ go build -o aos ./cmd/aos
 | 输入 | 解析结果 |
 | --- | --- |
 | `tos://example-bucket/ACME2026001` | bucket=`example-bucket`, prefix=`ACME2026001/` |
-| `example-bucket/ACME2026001` | 首段等于默认 bucket，同上 |
-| `ACME2026001/PM-ACME2026001-01/dataset` | 纯前缀，使用默认 bucket |
+| `tos:///ACME2026001/PM-ACME2026001-01/dataset` | bucket 用配置默认，prefix=`ACME2026001/PM-ACME2026001-01/dataset/` |
+| `example-bucket/ACME2026001`（仅 ls，首段等于默认 bucket） | bucket=`example-bucket`, prefix=`ACME2026001/` |
+| `ACME2026001/PM-ACME2026001-01/dataset`（仅 ls） | 纯前缀，使用默认 bucket |
 
-## SPI 与 contract
+`cp` 的云上路径必须带 `tos://`（否则按本地路径处理）；`tos:///` 表示 bucket 用配置默认值。
 
-`-spi` 必填，`-contract` 可省略：SPI `PM-ACME2026001-01` → 去掉 `PM-` 前缀、取最后 `-` 之前 → `ACME2026001`。
+## 上传语义
 
-## 任务记录（SQLite）
-
-- `cp` 会把任务写入 SQLite：时间、SPI/contract、`-d` 路径、远端路径、文件/字节进度、状态（running/done/break）、错误信息
-- 软链接记录在独立表 `task_links`（对应主表 `tasks`），记录链接相对路径、readlink 原值、上传后的对象 key
-- `down` 下载完成后自动判断：若远端前缀匹配到任务且有软链接记录，把下载回来的文本文件（内容与记录一致时）还原为 symlink；`-no-restore` 可关闭
-- 数据库默认 `~/.config/aos.db`（或 `$XDG_CONFIG_HOME/aos.db`），可用 `-db` 参数或环境变量 `AOS_DB` 指定
-- `-dry-run` 不写入记录；`-no-record` 可显式跳过记录
+- 目标前缀**直接铺入**：本地目录 `./dataset` 下的每个文件，其 key = 目标前缀 + 相对路径
+- 目录默认递归上传；单文件上传时目标末段即对象 key
+- 上传/下载任务均写入 SQLite（时间、方向 up/down、本地路径、远端路径、文件/字节进度、状态 running/done/break、错误信息），便于 `aos stat` 查看；`aos cp <本地路径>` 按上传记录还原
+- `-no-record` 可显式跳过记录
 - Ctrl+C / 报错退出时任务标记为 `break`，正常完成标记为 `done`
 
 ## 下载进度（`.aos/manifest.db`）
 
-`down` 在落盘根目录写入 `.aos/manifest.db`。每个对象下载成功后记录 `object_key` + `etag`（云上内容指纹）。再次 `down` 时：
+`cp` 下载时在落盘根目录写入 `.aos/manifest.db`。每个对象下载成功后记录 `object_key` + `etag`（云上内容指纹）。再次下载时：
 
-- 清单里有该 key、ETag 与本次 List 一致、且本地文件（或已还原的软链接）还在 → 跳过
+- 清单里有该 key、ETag 与本次 List 一致、且本地文件还在 → 跳过
 - 不在清单、ETag 变了、或本地文件被删 → 重下
-- 半截文件不会写入清单，下次整文件重下（不做分片 checkpoint）
-- `-overwrite` 忽略清单，全部重下并更新记录
-- `cp` 默认跳过 `.aos`，不会把清单传回远端
+- 半截文件不会写入清单（清单只记录完整下载的对象）；单个大文件中途进度由分片 checkpoint 续传（默认开启，见「断点续传与完整性」）
+- `-f` 忽略清单，全部重下并更新记录
+- 上传默认跳过 `.aos`，不会把清单传回远端
 
-## 上传行为说明
+## 传输行为说明
 
-- **软链接不溯源**：本地软链接（symlink，含指向目录的顶层链接）不会读取链接目标的内容，而是上传一个**同名文本文件**，文件内容写入链接目标地址。例如 `mapped.bam -> /data/share/bigfile.bam` 会上传一个 `mapped.bam` 文本文件，内容为 `/data/share/bigfile.bam`
+- **软链接**：默认不跟随，遍历时直接跳过（避免误传链接指向的共享大文件或造成循环）；本地路径本身为软链接时默认报错
+- **`-follow-links`**：软链接**溯源上传**链接目标的真实内容（key 仍用链接在项目中的相对路径）——目录链接递归展开并按 realpath 防循环、断链跳过并提示；这些溯源文件**不记录到任务数据库**（不计入 total/done/failed 统计）；**溯源链接上传失败仅提示，不中断任务**
 - **路径自动规范化**：`./abc//de/./f` 这类路径会自动规范为 `abc/de/f`，不会产生 `./`、`//`、`..` 段
-- 内置默认跳过 `.git/.svn/.DS_Store/.aos/__pycache__/._*/*.checkpoint/*.tmp`
+- 内置默认跳过 `.git/.svn/.DS_Store/.aos/__pycache__/._*/*.checkpoint/*.tmp`（跳过时会有汇总提示）
 
 ## cp 选项
 
 ```
--contract <合同号>    项目合同号（可省略，从 -spi 推导）
--spi <SPI>            SPI 编号，如 PM-ACME2026001-01（必填）
--d <本地路径>          本地目录或文件（支持相对路径）
--name <名称>          目标文件夹名（默认取 -d 的 basename）
--exclude <规则>       排除规则，逗号分隔，支持通配符（*.tmp,.git）
--concurrency <N>      并发数（默认按 CPU 核数，最少 4、最多 16）
--checkpoint           大文件分片上传时启用 SDK checkpoint
--dry-run              只打印计划，不实际上传
--q                    安静模式
+上传/下载通用:
+-j <N>           文件级并发（默认按 CPU 核数，最少 4、最多 16）
+-p <N>           单文件分片并发（默认 4）
+-ps <大小>       分片大小（默认 20MB，支持 5MB~5GB，如 20MB 或 5m）
+-q               安静模式
+-no-record       不写入任务记录数据库
+-timeout <时长>   传输总超时（默认 12h，如 30m、2h）
+
+上传:
+-e <规则>         排除规则，逗号分隔，支持通配符（*.tmp,.git）；规则若以 - 开头请用 -e=规则 形式
+-checkpoint       大文件分片上传断点续传（checkpoint 存于上传根目录 .aos/checkpoints/）
+-follow-links     软链接溯源上传链接目标内容（这些文件不记录任务）
+
+下载:
+-f               忽略下载清单，全部重下
+-no-checkpoint   关闭大文件分片下载断点续传（默认开启）
+
+数据库:
+-db <路径>        sqlite 数据库路径（默认 ~/.config/aos.db，或 $XDG_CONFIG_HOME/aos.db，或 $AOS_DB）
 ```
 
-上传目标：`tos://<bucket>/<contract>/<spi>/<名称>/`，本地目录内容保持相对结构。
-
-`-checkpoint` 只作用于超过 5MB 的单个大文件分片上传；重新执行 `cp` 仍会遍历并上传清单中的每个文件。
-
-## down 选项
+## ls 选项
 
 ```
--concurrency <N>      并发数（默认按 CPU 核数，最少 4、最多 16）
--overwrite            忽略清单，全部重下
--no-restore           下载后不自动还原软链接
+-max-depth <N>   最大显示深度（0 表示不限制，默认全部显示）
+-m               显示文件修改时间
 ```
+
+## 断点续传与完整性
+
+- **分片下载**：对 ≥5MB 的对象按分片（默认 20MB）并行 Range 下载，**默认开启断点续传**——中断后重跑会从上次进度继续，checkpoint 文件存于下载目录 `.aos/checkpoints/`（成功完成后 SDK 自动清理；`-no-checkpoint` 关闭）
+- **完整性校验**：SDK 客户端默认开启 CRC64 校验，每个分片下载完成、整文件落盘前自动校验，与云端内容指纹不一致会报错（类似 tosutil 的 `-vchecksum`，无需额外参数）
+- **CRC 失败自愈**：若断点续传的本地状态损坏（如磁盘故障）导致 CRC64 校验失败，会自动清理残留的 checkpoint/临时文件并无 checkpoint 全量重下一次，避免反复复用损坏状态
+- **失败重试**：所有网络请求自动指数退避重试 2 次（100ms/200ms），公网/内网偶发抖动可自动恢复
+- 对象级跳过仍由 `.aos/manifest.db`（key + ETag）保证，与分片断点续传互补：manifest 管“哪些对象已完成”，checkpoint 管“单个大文件下到一半”
 
 ## 权限要求（重要）
 
@@ -147,11 +165,11 @@ TOS 数据面操作需要账号具备对应权限。若 `check` / `ls` / `cp` �
 ## 开发
 
 ```bash
-go test ./...          # 单元测试（不访问 TOS）
+go test ./...              # 单元测试（不访问 TOS）
 go build -o aos ./cmd/aos  # 编译
 make linux                 # 交叉编译 linux/amd64 与 linux/arm64
-make docs                  # 从 README 生成 GitHub Pages 站点到 _site/
+make docs                  # 用 mkdocs-material 构建 GitHub Pages 站点到 _site/
 make build / test / ping
 ```
 
-说明文档发布在 [seqyuan.github.io/aos](https://seqyuan.github.io/aos/)（仓库需为 Public，或账号具备 GitHub Pages）。每次 push `main` 还会把 `_site` 作为 `docs-site` artifact 挂在 [Actions](https://github.com/seqyuan/aos/actions) 上。打 `v*` 标签会触发 Release，附带 Linux 二进制。
+说明文档发布在 [seqyuan.github.io/aos](https://seqyuan.github.io/aos/)（仓库需为 Public，或账号具备 GitHub Pages）。站点由 [mkdocs-material](https://squidfunk.github.io/mkdocs-material/) 构建（`mkdocs.yml` + `docs/` 目录，`docs/index.md` 为指向根 README 的软链，改文档只改根文件即可）。本地预览：`python3 -m mkdocs serve`。每次 push `main` 还会把 `_site` 作为 `docs-site` artifact 挂在 [Actions](https://github.com/seqyuan/aos/actions) 上。打 `v*` 标签会触发 Release，附带 Linux 二进制。

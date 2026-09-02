@@ -104,10 +104,6 @@ func Load(path string) (Config, error) {
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return cfg, fmt.Errorf("解析配置文件 %s 失败: %w", path, err)
 	}
-	if cfg.Endpoint == "" {
-		// endpoint 留空，由 client 从 region 推导
-		cfg.Endpoint = ""
-	}
 	if cfg.Region == "" {
 		cfg.Region = DefaultRegion
 	}
@@ -163,17 +159,26 @@ func MaskSecret(s string) string {
 
 // Validate 检查配置是否完整可用。
 func (c Config) Validate() error {
+	if err := c.ValidateAuth(); err != nil {
+		return err
+	}
+	if c.Bucket == "" {
+		return fmt.Errorf("缺少 bucket 名称")
+	}
+	return nil
+}
+
+// ValidateAuth 校验连接必需字段（不要求 bucket）。
+// 显式指定 tos://bucket/... 路径时 bucket 取自路径，无需配置默认 bucket。
+func (c Config) ValidateAuth() error {
 	if c.AccessKey == "" {
 		return fmt.Errorf("缺少 AccessKey（access_key）")
 	}
 	if c.SecretKey == "" {
 		return fmt.Errorf("缺少 SecretKey（secret_key）")
 	}
-	if c.Bucket == "" {
-		return fmt.Errorf("缺少 bucket 名称")
-	}
-	if c.Endpoint == "" {
-		return fmt.Errorf("缺少 endpoint")
+	if c.Endpoint == "" && c.Region == "" {
+		return fmt.Errorf("缺少 endpoint（endpoint 为空时需配置 region，由客户端自动推导）")
 	}
 	return nil
 }

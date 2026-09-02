@@ -1,0 +1,46 @@
+# aos 文档站点配置（mkdocs-material）
+# 构建输出到 _site/（GitHub Pages 部署目录），与原有 pages.yml 工作流保持兼容。
+site_name: aos
+site_description: 对象存储上传/下载/浏览命令行工具（当前后端为火山云 TOS）
+site_url: https://seqyuan.github.io/aos/
+docs_dir: docs
+site_dir: _site
+use_directory_urls: false
+
+nav:
+  - 首页: index.md
+  - 更新日志: changelog.md
+
+theme:
+  name: material
+  language: zh
+  palette:
+    - scheme: default
+      primary: indigo
+      toggle:
+        icon: material/brightness-7
+        name: 切换到暗色模式
+    - scheme: slate
+      primary: indigo
+      toggle:
+        icon: material/brightness-4
+        name: 切换到亮色模式
+  features:
+    - navigation.top
+    - toc.integrate
+    - content.code.copy
+
+markdown_extensions:
+  - tables
+  - admonition
+  - attr_list
+  - md_in_html
+  - pymdownx.superfences
+  - pymdownx.highlight
+  - pymdownx.tabbed
+
+plugins:
+  - search
+
+extra:
+  generator: false

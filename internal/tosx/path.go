@@ -15,6 +15,7 @@ type TOSPath struct {
 // ParseTOSPath 解析用户输入的 TOS 路径，支持三种写法：
 //
 //	tos://example-bucket/ACME2026001/PM-xxx-01/dataset  显式 bucket
+//	tos:///ACME2026001/PM-xxx-01/dataset               bucket 用配置默认值
 //	example-bucket/ACME2026001/...                     首段等于配置 bucket 时按 bucket 解析
 //	ACME2026001/PM-xxx-01/dataset                      纯前缀，使用配置的默认 bucket
 //
@@ -29,6 +30,11 @@ func ParseTOSPath(input, defaultBucket string) (TOSPath, error) {
 	if idx := strings.Index(p, "://"); idx >= 0 {
 		p = p[idx+3:]
 		explicit = true
+		if strings.HasPrefix(p, "/") {
+			// tos:///prefix：bucket 用配置默认值
+			p = strings.TrimPrefix(p, "/")
+			explicit = false
+		}
 	}
 	p = strings.TrimPrefix(p, "/")
 

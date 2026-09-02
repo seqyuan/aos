@@ -3,16 +3,16 @@
 // 用法示例：
 //
 //	aos ls tos://example-bucket/ACME2026001           查看目录树
-//	aos cp -spi PM-ACME2026001-01 -d ./dataset         上传（自动推导 contract）
-//	aos down -spi PM-ACME2026001-01 -d /local           下载
+//	aos cp ./dataset tos://example-bucket/ACME2026001/PM-xxx-01/dataset   上传
+//	aos cp tos://example-bucket/ACME2026001/PM-xxx-01/dataset /local      下载
 //	aos stat                                            查询任务状态（sqlite）
-//	aos restore -id 3 -d /local                         按软链接记录还原 symlink
 //	aos check                                           连接与权限诊断
 //	aos config set -ak AK... -sk SK...                  配置凭据
 package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -27,8 +27,8 @@ import (
 	"github.com/volcengine/ve-tos-golang-sdk/v2/tos"
 )
 
-// version 由构建注入（git tag / CI）；本地 go build 时为 dev。
-var version = "dev"
+// version 由构建注入（git tag / CI）；本地 go build 时为当前版本号。
+var version = "v0.3.0"
 
 func main() {
 	os.Exit(run(os.Args[1:]))
@@ -43,14 +43,10 @@ func run(args []string) int {
 	switch cmd {
 	case "ls", "list":
 		return cmdLS(rest)
-	case "cp", "upload":
+	case "cp", "copy":
 		return cmdCP(rest)
-	case "down", "download", "dl":
-		return cmdDown(rest)
 	case "stat":
 		return cmdStat(rest)
-	case "restore":
-		return cmdRestore(rest)
 	case "config":
 		return cmdConfig(rest)
 	case "check":
@@ -117,10 +113,64 @@ func parseFlagSet(fs *flag.FlagSet, args []string, usage string) (bool, error) {
 		fs.PrintDefaults()
 	}
 	args = reorderArgs(fs, args) // 位置参数可出现在任意位置
+	if err := validateNoFlagAsValue(fs, args); err != nil {
+		// flag 包的解析错误会自己打印，这里需手动打印 + usage
+		fmt.Fprintln(os.Stderr, err)
+		fs.Usage()
+		return false, err
+	}
 	if err := fs.Parse(args); err != nil {
 		return false, err
 	}
 	return true, nil
+}
+
+// validateNoFlagAsValue 防止非布尔 flag 把另一个 flag 当作自己的值吞掉。
+// Go 标准 flag 包对 "-d -q" 会解析成 d="-q"（q 不生效），属于用户漏写参数；
+// 这里提前拦截并给出标准错误，除非用户用 -flag=值 形式显式传以 - 开头的值。
+func validateNoFlagAsValue(fs *flag.FlagSet, args []string) error {
+	boolFlags, known := map[string]bool{}, map[string]bool{}
+	fs.VisitAll(func(f *flag.Flag) {
+		known[f.Name] = true
+		if bf, ok := f.Value.(interface{ IsBoolFlag() bool }); ok && bf.IsBoolFlag() {
+			boolFlags[f.Name] = true
+		}
+	})
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if len(a) < 2 || a[0] != '-' {
+			continue
+		}
+		name := strings.TrimLeft(a, "-")
+		if strings.Contains(name, "=") || boolFlags[name] {
+			continue
+		}
+		if i+1 < len(args) && strings.HasPrefix(args[i+1], "-") {
+			next := strings.TrimLeft(args[i+1], "-")
+			if known[next] {
+				return fmt.Errorf("flag needs an argument: -%s（其后紧跟另一个 flag -%s；如需传以 - 开头的值请用 -%s=值）", name, next, name)
+			}
+			// 未知的 - 前缀参数：负数（如 -max-depth -1）留给 flag 包正常解析；
+			// 其余情况大概率是用户拼错/漏写的 flag，提前拦截避免被吞成前一个 flag 的值。
+			if next != "" && !isNegativeNumber(args[i+1]) {
+				return fmt.Errorf("flag needs an argument: -%s（其后紧跟 %s，可能是拼写错误的 flag；如需传以 - 开头的值请用 -%s=值）", name, args[i+1], name)
+			}
+		}
+	}
+	return nil
+}
+
+// isNegativeNumber 判断是否为纯负数形式（允许负数值 flag，如 -max-depth -1）。
+func isNegativeNumber(s string) bool {
+	if len(s) < 2 || s[0] != '-' {
+		return false
+	}
+	for _, c := range s[1:] {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // reorderArgs 将位置参数挪到末尾，使 -flag 可以出现在命令行任意位置。
@@ -141,7 +191,9 @@ func reorderArgs(fs *flag.FlagSet, args []string) []string {
 			if strings.Contains(name, "=") {
 				continue // -flag=value 形式
 			}
-			if !boolFlags[name] && i+1 < len(args) {
+			// 值以下一个参数形式给出时，不能以 "-" 开头（否则会把布尔 flag 当值吞掉，
+			// 例如 "-d -q" 应报 -d 缺参，而不是把 -d 赋成 "-q"）
+			if !boolFlags[name] && i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
 				flags = append(flags, args[i+1]) // flag 的值
 				i++
 			}
@@ -177,7 +229,14 @@ func cmdLS(args []string) int {
 		fmt.Fprintf(os.Stderr, "aos ls: %v\n", err)
 		return 1
 	}
-	if err := cfg.Validate(); err != nil {
+	// 显式 tos://bucket/... 路径时 bucket 取自路径，无需配置默认 bucket；
+	// 否则（纯前缀形式）必须校验默认 bucket。
+	if strings.Contains(fs.Arg(0), "://") {
+		if err := cfg.ValidateAuth(); err != nil {
+			fmt.Fprintf(os.Stderr, "aos ls: %v\n（运行 aos config set 配置凭据）\n", err)
+			return 1
+		}
+	} else if err := cfg.Validate(); err != nil {
 		fmt.Fprintf(os.Stderr, "aos ls: %v\n（运行 aos config set 配置凭据）\n", err)
 		return 1
 	}
@@ -196,6 +255,10 @@ func cmdLS(args []string) int {
 		MaxDepth: *maxDepth,
 		ShowMod:  *showMod,
 	}, os.Stdout); err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			fmt.Fprintln(os.Stderr, "aos ls: 列表超时（最长 2 分钟）。请缩小路径范围后重试，或检查网络")
+			return 1
+		}
 		fmt.Fprintf(os.Stderr, "aos ls: %v\n", err)
 		return 1
 	}
@@ -316,15 +379,24 @@ func cmdCheck(args []string) int {
 	ctx, cancel := newSignalCtx()
 	defer cancel()
 
-	// 依次尝试：配置的 endpoint -> 公网 endpoint
+	// 依次尝试：配置的 endpoint -> 按 region 推导的公网 endpoint（避免内网/异 region 配置下误探测）
 	type try struct{ ep, region string }
 	tries := []try{{cfg.Endpoint, cfg.Region}}
 	publicEP := ""
-	if cfg.Endpoint != "tos-cn-beijing.volces.com" {
-		publicEP = "tos-cn-beijing.volces.com"
+	if cfg.Region != "" {
+		derived := "tos-" + cfg.Region + ".volces.com"
+		if cfg.Endpoint != derived {
+			publicEP = derived
+		}
+	} else if cfg.Endpoint != config.DefaultEndpoint {
+		publicEP = config.DefaultEndpoint
 	}
 	if publicEP != "" {
-		tries = append(tries, try{publicEP, "cn-beijing"})
+		region := cfg.Region
+		if region == "" {
+			region = config.DefaultRegion
+		}
+		tries = append(tries, try{publicEP, region})
 	}
 
 	for i, t := range tries {
@@ -371,43 +443,40 @@ func printUsage(w *os.File) {
 	fmt.Fprintf(w, `aos %s — 对象存储上传/下载/浏览工具（当前后端：火山云 TOS）
 
 用法:
-  aos ls <tos路径> [选项]            以目录树形式列出目标路径下的文件
-  aos cp [选项]                      上传本地目录/文件到 TOS（记录到 sqlite；upload 为别名）
-  aos down [选项]                    下载（支持 -d/-spi/-id 定位，自动还原软链接；download/dl 为别名）
-  aos stat [选项]                    查询 cp 任务状态（done/break，含进度）
-  aos restore [选项]                 手动还原软链接（down 已自动执行）
-  aos check [选项]                   诊断连接与权限
-  aos config [set] [选项]            查看/配置凭据
-  aos version                        版本号
+  aos cp <源> [<目标>] [选项]      上传/下载（云上路径带 tos:// 前缀，方向由参数顺序决定）
+  aos ls <tos路径> [选项]          以目录树形式列出目标路径下的文件
+  aos stat [选项]                  查询上传历史（默认：中断/失败 + 近 2 天；-a 全部）
+  aos check [选项]                 诊断连接与权限
+  aos config [set] [选项]          查看/配置凭据
+  aos version                      版本号
+
+cp 示例（上传：本地在前）:
+  aos cp ./dataset tos://example-bucket/ACME2026001/PM-ACME2026001-01/dataset
+  aos cp ./dataset tos:///ACME2026001/PM-ACME2026001-01/dataset   # bucket 用配置默认
+  aos cp dataset.zip tos://example-bucket/ACME2026001/PM-ACME2026001-01/dataset.zip
+
+cp 示例（下载：tos 在前）:
+  aos cp tos://example-bucket/ACME2026001/PM-ACME2026001-01/dataset /local
+  aos cp tos://example-bucket/ACME2026001/PM-ACME2026001-01/dataset    # 下载到当前目录
+  aos cp /data/project1/dataset            # 单参数本地路径：还原上次上传的数据
 
 ls 示例:
   aos ls tos://example-bucket/ACME2026001
-  aos ls ACME2026001/PM-ACME2026001-01/dataset
-
-cp 示例:
-  aos cp -contract ACME2026001 -spi PM-ACME2026001-01 -d /path/project1/dataset
-  aos cp -spi PM-ACME2026001-01 -d ./dataset        # -contract 自动推导
-  aos cp -spi PM-ACME2026001-01 -d ./dataset -dry-run
-
-down 示例:
-  aos down tos://example-bucket/ACME2026001/PM-ACME2026001-01/dataset -d /local
-  aos down -spi PM-ACME2026001-01                  # 自动探测远端文件夹，存到 ./dataset/
-  aos down -d /data/project1/dataset                     # 按 cp 时的路径回查任务，下载回该路径
-  aos down -id 3 -d /local                              # 按任务 ID 下载
-  # 下载完成后自动还原软链接（-no-restore 关闭）
+  aos ls tos:///ACME2026001/PM-ACME2026001-01/dataset
 
 stat 示例:
-  aos stat                                               # 最近任务列表
-  aos stat -spi PM-ACME2026001-01                  # 某子项目所有任务
-  aos stat -id 3                                         # 任务详情 + 软链接记录
-
-restore 示例:
-  aos restore -id 3 -d /local/dataset                    # 还原任务 3 的软链接到本地
+  aos stat                # 中断/失败 + 近 2 天的任务
+  aos stat -a             # 全部任务
+  aos stat -id 3          # 某次任务的详情（错误信息等）
 
 行为说明:
-  - cp 任务记录写入 sqlite（默认 ~/.config/aos.db，-db/AOS_DB 可改）
-  - down 在下载根目录写入 .aos/manifest.db（按 object key + ETag 判断已完成，不比大小）
-  - 本地软链接不溯源：上传同名文本文件，内容为链接目标地址；task_links 表记录以便还原
+  - 上传/下载任务均记录到 sqlite（默认 ~/.config/aos.db，-db/AOS_DB 可改）；-no-record 可关闭
+  - 下载在落盘根目录写入 .aos/manifest.db（按 object key + ETag 判断已完成，不比大小）
+  - 上传目标前缀直接铺入：文件 key = 目标前缀 + 本地相对路径（目录默认递归）
+  - 大文件（≥5MB）分片上传/下载；下载默认断点续传（checkpoint 存于 .aos/checkpoints/）
+  - 分片参数 -ps（大小，默认 20MB）、-p（单文件分片并发，默认 4）、-j（文件级并发，默认按 CPU）
+  - 网络请求失败自动指数退避重试 2 次
+  - 软链接默认不跟随上传（避免误传共享大文件）；-follow-links 溯源上传
   - 路径自动规范化（./abc//de -> abc/de）
 
 配置说明:

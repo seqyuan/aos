@@ -15,10 +15,14 @@ func TestParseTOSPath(t *testing.T) {
 	}{
 		{"tos://example-bucket/ACME2026001/PM-x/dataset", "example-bucket", "ACME2026001/PM-x/dataset/", false},
 		{"tos://example-bucket", "example-bucket", "", false},
+		{"tos:///ACME2026001/PM-x/dataset", "example-bucket", "ACME2026001/PM-x/dataset/", false},
+		{"tos:///ACME2026001", "example-bucket", "ACME2026001/", false},
+		{"tos:///example-bucket/x", "example-bucket", "x/", false}, // 首段恰为默认桶时按桶解析
 		{"example-bucket/ACME2026001", "example-bucket", "ACME2026001/", false},
 		{"ACME2026001/PM-x/dataset", "example-bucket", "ACME2026001/PM-x/dataset/", false},
 		{"tos://example-bucket/ACME2026001//dataset", "example-bucket", "ACME2026001/dataset/", false},
 		{"", "", "", true},
+		{"tos://", "example-bucket", "", true},
 	}
 	for _, c := range cases {
 		got, err := ParseTOSPath(c.in, "example-bucket")

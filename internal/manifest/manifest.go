@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/seqyuan/aos/internal/sqldsn"
 	_ "modernc.org/sqlite"
 )
 
@@ -52,7 +53,7 @@ func Open(localRoot string) (*DB, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, fmt.Errorf("创建清单目录失败: %w", err)
 	}
-	dsn := "file:" + path + "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)"
+	dsn := sqldsn.File(path)
 	sqlDB, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("打开下载清单失败: %w", err)

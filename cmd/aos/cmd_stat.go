@@ -11,14 +11,14 @@ import (
 	"github.com/seqyuan/aos/internal/human"
 )
 
-// cmdStat aos stat：查询 cp 任务状态（done/break，含进度）。
+// cmdStat aos stat：查询上传任务状态（默认只看中断/失败与近 2 天的任务，-a 显示全部）。
 func cmdStat(args []string) int {
 	fs := flag.NewFlagSet("aos stat", flag.ContinueOnError)
-	spiFilter := fs.String("spi", "", "按 SPI 编号过滤")
-	taskID := fs.Int64("id", 0, "查看指定任务详情（含软链接记录）")
+	all := fs.Bool("a", false, "显示全部任务（默认只显示中断/失败与近 2 天的任务）")
+	taskID := fs.Int64("id", 0, "查看指定任务详情")
 	limit := fs.Int("limit", 20, "最多列出多少条")
 	dbPath := fs.String("db", "", "sqlite 数据库路径（默认 ~/.config/aos.db）")
-	if ok, err := parseFlagSet(fs, args, "用法: aos stat [选项]\n\n示例:\n  aos stat                                      # 最近任务\n  aos stat -spi PM-ACME2026001-01         # 某子项目任务\n  aos stat -id 3                                # 任务详情 + 软链接记录"); !ok {
+	if ok, err := parseFlagSet(fs, args, "用法: aos stat [选项]\n\n示例:\n  aos stat            # 中断/失败 + 近 2 天的任务\n  aos stat -a         # 全部任务\n  aos stat -id 3      # 某次任务详情（错误信息等）"); !ok {
 		return 2
 	} else if err != nil {
 		return 2
@@ -40,46 +40,103 @@ func cmdStat(args []string) int {
 	if *taskID > 0 {
 		return statDetail(database, path, *taskID)
 	}
-	return statList(database, path, *spiFilter, *limit)
+	return statList(database, path, *limit, *all)
 }
 
-func statList(database *db.DB, dbPath, spiFilter string, limit int) int {
-	tasks, err := database.ListTasks(spiFilter, limit)
+func statList(database *db.DB, dbPath string, limit int, all bool) int {
+	tasks, err := database.ListTasks(limit, !all)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "aos stat: %v\n", err)
 		return 1
 	}
 	if len(tasks) == 0 {
-		if spiFilter != "" {
-			fmt.Printf("没有 %s 的任务记录（数据库 %s）\n", spiFilter, dbPath)
-		} else {
+		if all {
 			fmt.Printf("还没有任务记录（数据库 %s）\n", dbPath)
+		} else {
+			fmt.Printf("近 2 天没有进行中/中断的任务，也没有失败任务（数据库 %s；aos stat -a 查看全部）\n", dbPath)
 		}
 		return 0
 	}
-	fmt.Printf("%-4s %-26s %-8s %-18s %-13s %s\n", "ID", "SPI", "状态", "文件进度", "开始时间", "完成/错误")
+	if !all {
+		fmt.Printf("（仅显示中断/失败与近 2 天的任务；aos stat -a 查看全部）\n")
+	}
+	// 列宽按显示宽度对齐（全角字符占 2 列），表头与数据逐列左对齐，列间一个空格分隔
+	header := strings.Join([]string{
+		padDisplay("ID", 4), padDisplay("方向", 4), padDisplay("状态", 8),
+		padDisplay("文件进度", 17), padDisplay("开始时间", 13), padDisplay("完成/错误", 13), "路径",
+	}, " ")
+	fmt.Println(header)
 	fmt.Println(strings.Repeat("-", 104))
 	for _, t := range tasks {
 		status := t.Status
 		if t.Status == "running" && time.Since(t.UpdatedAt) > 30*time.Second {
 			status = "running?"
 		}
+		direction := t.Direction
+		if direction == "" {
+			direction = "up"
+		}
+		// 路径：上传显示本地路径，下载显示 tos 源路径
+		path := t.LocalPath
+		if direction == "down" {
+			path = t.RemotePrefix
+		}
 		fileProgress := fmt.Sprintf("%d/%d", t.DoneFiles, t.TotalFiles)
 		if t.FailedFiles > 0 {
 			fileProgress += fmt.Sprintf("(失败%d)", t.FailedFiles)
 		}
-		start := t.StartedAt.Format("01-02 15:04:05")
+		start := t.StartedAt.Format("01-02 15:04")
 		end := ""
 		if !t.FinishedAt.IsZero() {
-			end = t.FinishedAt.Format("01-02 15:04:05")
+			end = t.FinishedAt.Format("01-02 15:04")
 		} else {
 			end = statusLine(t)
 		}
-		fmt.Printf("%-4d %-26s %-8s %-18s %-13s %s\n",
-			t.ID, t.SPI, status, fileProgress, start, end)
+		fmt.Println(strings.Join([]string{
+			padDisplay(fmt.Sprintf("%d", t.ID), 4), padDisplay(direction, 4), padDisplay(status, 8),
+			padDisplay(fileProgress, 17), padDisplay(start, 13), padDisplay(end, 13), truncatePath(path, 42),
+		}, " "))
 	}
-	fmt.Printf("\n数据库: %s（用 aos stat -id <ID> 查看详情与软链接记录）\n", dbPath)
+	fmt.Printf("\n数据库: %s（aos stat -id <ID> 查看详情）\n", dbPath)
 	return 0
+}
+
+// padDisplay 按终端显示宽度左对齐补空格：全角字符（中文等）占 2 列，半角占 1 列。
+func padDisplay(s string, width int) string {
+	w := 0
+	for _, r := range s {
+		w += runeWidth(r)
+	}
+	if w >= width {
+		return s
+	}
+	return s + strings.Repeat(" ", width-w)
+}
+
+// runeWidth 返回字符的终端显示宽度（常用全角区间按 2 列计）。
+func runeWidth(r rune) int {
+	switch {
+	case r >= 0x1100 && (r <= 0x115F || r == 0x2329 || r == 0x232A ||
+		(r >= 0x2E80 && r <= 0xA4CF) || (r >= 0xAC00 && r <= 0xD7A3) ||
+		(r >= 0xF900 && r <= 0xFAFF) || (r >= 0xFE10 && r <= 0xFE19) ||
+		(r >= 0xFE30 && r <= 0xFE6F) || (r >= 0xFF00 && r <= 0xFF60) ||
+		(r >= 0xFFE0 && r <= 0xFFE6)):
+		return 2
+	default:
+		return 1
+	}
+}
+
+// truncatePath 截断过长路径，保留首尾（按字符，避免中文乱码）。
+func truncatePath(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	if n <= 3 {
+		return string(r[:n])
+	}
+	return string(r[:n-1]) + "…"
 }
 
 func statDetail(database *db.DB, dbPath string, id int64) int {
@@ -88,39 +145,20 @@ func statDetail(database *db.DB, dbPath string, id int64) int {
 		fmt.Fprintf(os.Stderr, "aos stat: %v\n", err)
 		return 1
 	}
-	fmt.Printf("任务 %d  状态: %s\n", t.ID, t.Status)
-	fmt.Printf("  SPI:        %s\n", t.SPI)
-	fmt.Printf("  contract:   %s\n", t.Contract)
-	fmt.Printf("  -d:         %s\n", t.LocalPath)
-	if t.RemotePrefix != "" {
-		fmt.Printf("  远端:       %s\n", t.RemotePrefix)
-	}
+	fmt.Printf("任务 %d  方向: %s  状态: %s\n", t.ID, taskDirection(t), t.Status)
+	fmt.Printf("  本地路径:   %s\n", t.LocalPath)
+	fmt.Printf("  云上路径:   %s\n", t.RemotePrefix)
 	progress := fmt.Sprintf(" 文件进度:   %d/%d  （%s/%s）", t.DoneFiles, t.TotalFiles, human.Size(t.DoneBytes), human.Size(t.TotalBytes))
 	if t.FailedFiles > 0 {
 		progress += fmt.Sprintf("，失败 %d", t.FailedFiles)
 	}
-	if t.LinkCount > 0 {
-		progress += fmt.Sprintf("，软链接 %d", t.LinkCount)
-	}
 	fmt.Println(progress)
-	fmt.Printf("  开始:       %s\n", t.StartedAt.Format("2006-01-02 15:04:05"))
+	fmt.Printf("  开始:       %s\n", t.StartedAt.Format("2006-01-02 15:04"))
 	if !t.FinishedAt.IsZero() {
-		fmt.Printf("  结束:       %s（用时 %s）\n", t.FinishedAt.Format("2006-01-02 15:04:05"), t.FinishedAt.Sub(t.StartedAt).Round(time.Second))
+		fmt.Printf("  结束:       %s（用时 %s）\n", t.FinishedAt.Format("2006-01-02 15:04"), t.FinishedAt.Sub(t.StartedAt).Round(time.Second))
 	}
 	if t.Error != "" {
 		fmt.Printf("  错误:       %s\n", t.Error)
-	}
-
-	links, err := database.GetLinks(id)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "aos stat: %v\n", err)
-		return 1
-	}
-	if len(links) > 0 {
-		fmt.Printf("  软链接记录 (%d)：\n", len(links))
-		for _, l := range links {
-			fmt.Printf("    %s -> %s   (对象: %s)\n", l.LinkRel, l.LinkTarget, l.ObjectKey)
-		}
 	}
 	fmt.Printf("  数据库: %s\n", dbPath)
 	return 0
@@ -131,4 +169,11 @@ func statusLine(t db.Task) string {
 		return "(break)"
 	}
 	return "…"
+}
+
+func taskDirection(t db.Task) string {
+	if t.Direction == "" {
+		return "up"
+	}
+	return t.Direction
 }

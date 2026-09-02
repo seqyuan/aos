@@ -4,6 +4,8 @@ package tosx
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/seqyuan/aos/internal/config"
@@ -11,10 +13,12 @@ import (
 )
 
 // NewClient 根据配置创建 TOS 客户端。
+// 开启 SDK 指数退避重试（最多重试 2 次，100ms/200ms），应对网络抖动与偶发失败。
 func NewClient(cfg config.Config) (*tos.ClientV2, error) {
 	client, err := tos.NewClientV2(cfg.EndpointOrDefault(),
 		tos.WithRegion(cfg.Region),
-		tos.WithCredentials(tos.NewStaticCredentials(cfg.AccessKey, cfg.SecretKey)))
+		tos.WithCredentials(tos.NewStaticCredentials(cfg.AccessKey, cfg.SecretKey)),
+		tos.WithMaxRetryCount(2))
 	if err != nil {
 		return nil, fmt.Errorf("创建 TOS 客户端失败: %w", err)
 	}
@@ -49,7 +53,10 @@ func ListAll(ctx context.Context, client *tos.ClientV2, bucket, prefix string) (
 
 // UploadOne 上传单个文件。
 // 小于 5MB 用单次 PUT，大文件用 SDK 分片上传（可开启断点续传）。
-func UploadOne(ctx context.Context, client *tos.ClientV2, bucket, key, localPath string, checkpoint bool) error {
+// partSize 为分片大小（0 用默认 20MB），taskNum 为单文件分片并发（0 用默认 4）。
+// checkpointDir 非空时开启分片断点续传，checkpoint 文件由 SDK 生成在该目录下
+// （命名 <文件名>.<bucket/key 哈希>.upload），避免写到源文件同目录污染数据。
+func UploadOne(ctx context.Context, client *tos.ClientV2, bucket, key, localPath string, checkpoint bool, checkpointDir string, partSize int64, taskNum int) error {
 	stat, err := statFile(localPath)
 	if err != nil {
 		return err
@@ -61,19 +68,27 @@ func UploadOne(ctx context.Context, client *tos.ClientV2, bucket, key, localPath
 		})
 		return FriendlyError(err)
 	}
-	_, err = client.UploadFile(ctx, &tos.UploadFileInput{
+	input := &tos.UploadFileInput{
 		CreateMultipartUploadV2Input: tos.CreateMultipartUploadV2Input{Bucket: bucket, Key: key},
 		FilePath:                     localPath,
-		PartSize:                     defaultPartSize,
-		TaskNum:                      multipartTaskNum,
-		EnableCheckpoint:             checkpoint,
-	})
+		PartSize:                     partSizeOrDefault(partSize),
+		TaskNum:                      taskNumOrDefault(taskNum),
+	}
+	if checkpoint && checkpointDir != "" {
+		// CheckpointFile 传已存在的目录时，SDK 会在其中生成按 bucket/key 哈希的 checkpoint 文件
+		input.EnableCheckpoint = true
+		input.CheckpointFile = checkpointDir
+	}
+	_, err = client.UploadFile(ctx, input)
 	return FriendlyError(err)
 }
 
 // DownloadOne 下载单个对象到本地文件。
 // size 为远端对象大小，用于选择单次 GET 还是分片下载（不依赖本地 dest 是否存在）。
-func DownloadOne(ctx context.Context, client *tos.ClientV2, bucket, key, localPath string, size int64) error {
+// partSize 为分片大小（0 用默认 20MB），taskNum 为分片并发（0 用默认 4）。
+// checkpointDir 非空时开启分片断点续传，checkpoint 文件由 SDK 生成在该目录下
+// （命名 <文件名>.<bucket/key 哈希>.download）；下载完成后 SDK 自动清理。
+func DownloadOne(ctx context.Context, client *tos.ClientV2, bucket, key, localPath string, size int64, partSize int64, taskNum int, checkpointDir string) error {
 	if size < smallFileThreshold {
 		_, err := client.GetObjectToFile(ctx, &tos.GetObjectToFileInput{
 			GetObjectV2Input: tos.GetObjectV2Input{Bucket: bucket, Key: key},
@@ -81,22 +96,70 @@ func DownloadOne(ctx context.Context, client *tos.ClientV2, bucket, key, localPa
 		})
 		return FriendlyError(err)
 	}
-	_, err := client.DownloadFile(ctx, &tos.DownloadFileInput{
+	input := &tos.DownloadFileInput{
 		HeadObjectV2Input: tos.HeadObjectV2Input{Bucket: bucket, Key: key},
 		FilePath:          localPath,
-		PartSize:          defaultPartSize,
-		TaskNum:           multipartTaskNum,
-	})
+		PartSize:          partSizeOrDefault(partSize),
+		TaskNum:           taskNumOrDefault(taskNum),
+	}
+	if checkpointDir != "" {
+		// CheckpointFile 传已存在的目录时，SDK 会在其中生成按 bucket/key 哈希的 checkpoint 文件
+		input.EnableCheckpoint = true
+		input.CheckpointFile = checkpointDir
+	}
+	_, err := client.DownloadFile(ctx, input)
+	if err != nil && checkpointDir != "" && isCRCError(err) {
+		// 仅断点续传场景：CRC64 校验失败说明本地 temp/checkpoint 状态损坏
+		// （如磁盘故障），清掉残留后不带 checkpoint 全量重下一次，避免反复复用损坏状态
+		_ = cleanupDownloadResidue(checkpointDir, localPath)
+		retryInput := &tos.DownloadFileInput{
+			HeadObjectV2Input: tos.HeadObjectV2Input{Bucket: bucket, Key: key},
+			FilePath:          localPath,
+			PartSize:          partSizeOrDefault(partSize),
+			TaskNum:           taskNumOrDefault(taskNum),
+		}
+		if _, retryErr := client.DownloadFile(ctx, retryInput); retryErr == nil {
+			return nil
+		} else {
+			return FriendlyError(retryErr)
+		}
+	}
 	return FriendlyError(err)
 }
 
-// UploadText 上传一段文本内容为对象（用于软链接转文本文件）。
-func UploadText(ctx context.Context, client *tos.ClientV2, bucket, key, content string) error {
-	_, err := client.PutObjectV2(ctx, &tos.PutObjectV2Input{
-		PutObjectBasicInput: tos.PutObjectBasicInput{Bucket: bucket, Key: key},
-		Content:             strings.NewReader(content),
-	})
-	return FriendlyError(err)
+// isCRCError 判断是否为 SDK 的 CRC64 校验失败错误。
+// SDK 在整文件 CRC64 与云端不一致时报 "tos: crc of entire file mismatch."。
+func isCRCError(err error) bool {
+	return err != nil && strings.Contains(strings.ToLower(err.Error()), "crc")
+}
+
+// cleanupDownloadResidue 清理断点续传失败后残留的 checkpoint 与临时文件。
+// checkpoint 文件名由 SDK 内部生成（<文件名>.<bucket/key 哈希>.download），
+// 临时文件名为 <目标文件>.temp.<时间戳>，这里按前缀匹配删除，不依赖 SDK 内部命名细节。
+func cleanupDownloadResidue(checkpointDir, localPath string) error {
+	var firstErr error
+	remove := func(p string) {
+		if err := os.Remove(p); err != nil && !os.IsNotExist(err) && firstErr == nil {
+			firstErr = err
+		}
+	}
+	base := filepath.Base(localPath)
+	if entries, err := os.ReadDir(checkpointDir); err == nil {
+		for _, e := range entries {
+			if strings.HasPrefix(e.Name(), base+".") && strings.HasSuffix(e.Name(), ".download") {
+				remove(filepath.Join(checkpointDir, e.Name()))
+			}
+		}
+	}
+	// temp 文件与目标文件同目录
+	if entries, err := os.ReadDir(filepath.Dir(localPath)); err == nil {
+		for _, e := range entries {
+			if strings.HasPrefix(e.Name(), base+".temp.") {
+				remove(filepath.Join(filepath.Dir(localPath), e.Name()))
+			}
+		}
+	}
+	return firstErr
 }
 
 // FriendlyError 将 SDK 错误转换成更易懂的中文提示（含权限建议）。

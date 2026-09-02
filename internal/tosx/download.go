@@ -12,92 +12,85 @@ import (
 	"github.com/seqyuan/aos/internal/config"
 	"github.com/seqyuan/aos/internal/human"
 	"github.com/seqyuan/aos/internal/manifest"
-	"github.com/seqyuan/aos/internal/spi"
 	"github.com/seqyuan/aos/internal/ui"
 	"github.com/volcengine/ve-tos-golang-sdk/v2/tos"
 )
 
-// DownloadOptions download 命令选项。
+// DownloadOptions 下载选项（aos cp <tos源> <本地目录>）。
+// 源前缀下的对象按相对路径直接铺入本地目录，不再套一层目录名。
 type DownloadOptions struct {
-	Path          string // 直接指定 TOS 路径（tos://bucket/prefix 或 prefix），优先于 contract/spi
-	Contract      string // 项目合同号，可为空（从 spi 推导）
-	SPI           string // SPI 编号
-	Name          string // 远端文件夹名，省略时自动探测
-	LocalDir      string // 本地保存目录（支持相对路径），文件保存到 {LocalDir}/{name}/
-	LocalDirExact bool   // 直接把 LocalDir 当作落盘根目录（不追加 name）
-	Concurrency   int
-	Overwrite     bool // 本地已存在同名文件时是否覆盖（默认跳过）
-	Quiet         bool
-	// OnCompleted 下载全部完成后回调（remotePrefix 为实际远端前缀，localRoot 为实际落盘根目录）。
-	// 用于 down 后自动还原软链接等扩展逻辑。
-	OnCompleted func(remotePrefix, localRoot string)
+	Path        string // TOS 源路径（tos://bucket/prefix，或 tos:///prefix 用默认 bucket）
+	LocalDir    string // 本地落盘目录（支持相对路径；空为当前目录）
+	LocalFile   string // 单文件模式下的精确落盘路径（还原下载时使用，目录模式忽略）
+	Concurrency int
+	Overwrite   bool // 忽略清单，全部重下（与 README 一致；本地存在但未入清单仍会覆盖）
+	Quiet       bool
+	PartSize    int64            // 分片大小（0 用默认 20MB）
+	TaskNum     int              // 单文件分片并发（0 用默认 4）
+	Checkpoint  bool             // 大文件分片下载断点续传（默认开启，checkpoint 存于 .aos/checkpoints/）
+	Recorder    DownloadRecorder // 任务记录器（可为 nil）
 }
 
-// Download 执行下载。
-// 方式一：opt.Path 直接指定 TOS 路径（tos://bucket/prefix）
-// 方式二：contract/spi/name 推导 remotePrefix；name 省略时自动探测
-func Download(ctx context.Context, client *tos.ClientV2, cfg config.Config, opt DownloadOptions, w io.Writer) error {
-	var remotePrefix string
-	var name string
+// DownloadRecorder 记录下载任务：调用方实现（例如写入 SQLite）。
+// 与 UploadRecorder 同构，返回的 taskID 会在后续回调中原样传回。
+type DownloadRecorder interface {
+	OnTaskBegin(remotePath string, totalFiles int, totalBytes int64) (taskID int64, err error)
+	OnProgress(taskID int64, doneFiles, doneBytes, failedFiles int64) error
+	OnFinish(taskID int64, status, errMsg string) error
+}
 
-	if opt.Path != "" {
-		tp, err := ParseTOSPath(opt.Path, cfg.Bucket)
-		if err != nil {
-			return err
-		}
-		remotePrefix = tp.Prefix
-		name = filepath.Base(strings.TrimSuffix(remotePrefix, "/"))
-		if name == "." || name == "/" || name == "" {
-			name = tp.Bucket
-		}
-	} else {
-		if err := spi.ValidateSPI(opt.SPI); err != nil {
-			return err
-		}
-		contract, err := resolveContract(opt.Contract, opt.SPI)
-		if err != nil {
-			return err
-		}
-		// 远端文件夹名：显式 -name 优先；否则列出 contract/spi/ 自动探测唯一子文件夹
-		name = strings.TrimSpace(opt.Name)
-		if name == "" {
-			name, err = detectRemoteName(ctx, client, cfg.Bucket, contract, opt.SPI)
-			if err != nil {
-				return err
-			}
-		}
-		remotePrefix = spi.TargetKey(contract, opt.SPI) + "/" + name + "/"
+// pathSource 是 tos:// 路径解析后、真正用于 List/Get 的位置。
+type pathSource struct {
+	Bucket string
+	Prefix string
+}
+
+// resolvePathSource 从用户路径得到 bucket/prefix。
+// 显式 tos://other-bucket/... 必须使用路径中的 bucket，不能回落到配置默认值。
+func resolvePathSource(path, defaultBucket string) (pathSource, error) {
+	tp, err := ParseTOSPath(path, defaultBucket)
+	if err != nil {
+		return pathSource{}, err
 	}
+	return pathSource{Bucket: tp.Bucket, Prefix: tp.Prefix}, nil
+}
 
-	objs, err := ListAll(ctx, client, cfg.Bucket, remotePrefix)
+// Download 执行下载：把 tos:// 源前缀下的对象按相对路径下载到本地目录。
+func Download(ctx context.Context, client *tos.ClientV2, cfg config.Config, opt DownloadOptions, w io.Writer) error {
+	if opt.Path == "" {
+		return fmt.Errorf("缺少 tos:// 源路径")
+	}
+	src, err := resolvePathSource(opt.Path, cfg.Bucket)
 	if err != nil {
 		return err
 	}
+	bucket := src.Bucket
+	remotePrefix := src.Prefix
 
-	// 过滤目录占位对象
-	files := make([]tos.ListedObjectV2, 0, len(objs))
-	for _, o := range objs {
-		if strings.HasSuffix(o.Key, "/") && o.Size == 0 {
-			continue
-		}
-		files = append(files, o)
+	files, remotePrefix, isSingleFile, err := resolveDownloadSource(ctx,
+		func(c context.Context, b, p string) ([]tos.ListedObjectV2, error) {
+			return ListAll(c, client, b, p)
+		}, bucket, remotePrefix)
+	if err != nil {
+		return err
 	}
 	if len(files) == 0 {
-		fmt.Fprintf(w, "远端 tos://%s/%s 下没有文件\n", cfg.Bucket, strings.TrimSuffix(remotePrefix, "/"))
+		fmt.Fprintf(w, "远端 tos://%s/%s 下没有文件\n", bucket, strings.TrimSuffix(remotePrefix, "/"))
 		return nil
 	}
 
-	// 本地目标根目录：{LocalDir}/{name}，与上传对称（LocalDir 为空时即 ./name）
-	// LocalDirExact 为 true 时直接使用 LocalDir 作为根目录（用于按 -d 路径还原下载）
-	localRoot := filepath.Join(opt.LocalDir, name)
-	if opt.LocalDirExact {
-		localRoot = opt.LocalDir
-	}
+	// 本地目标根目录：前缀直接铺入（LocalDir 为空时即当前目录）
+	localRoot := opt.LocalDir
 	if localRoot == "" {
 		localRoot = "."
 	}
+	// 单文件精确还原（-d 回查 up 文件路径）：manifest/checkpoint 与文件同级目录
+	manRoot := localRoot
+	if isSingleFile && opt.LocalFile != "" {
+		manRoot = filepath.Dir(opt.LocalFile)
+	}
 
-	man, err := manifest.Open(localRoot)
+	man, err := manifest.Open(manRoot)
 	if err != nil {
 		return fmt.Errorf("打开下载清单失败: %w", err)
 	}
@@ -107,6 +100,15 @@ func Download(ctx context.Context, client *tos.ClientV2, cfg config.Config, opt 
 		return fmt.Errorf("读取下载清单失败: %w", err)
 	}
 
+	// 下载断点续传：大文件分片下载的 checkpoint 文件集中存于 .aos/checkpoints/
+	// （与 manifest 同级），成功后 SDK 自动清理；中断残留则下次可续传。
+	checkpointDir := ""
+	if opt.Checkpoint {
+		checkpointDir = filepath.Join(manRoot, ".aos", "checkpoints")
+		if err := os.MkdirAll(checkpointDir, 0o755); err != nil {
+			checkpointDir = "" // 无法创建目录时退化为不带 checkpoint
+		}
+	}
 	var totalBytes int64
 	type dlJob struct {
 		key  string
@@ -121,9 +123,16 @@ func Download(ctx context.Context, client *tos.ClientV2, cfg config.Config, opt 
 		if rel == "" {
 			rel = filepath.Base(strings.TrimSuffix(o.Key, "/"))
 		}
-		dest, err := SafeJoin(localRoot, rel)
-		if err != nil {
-			return fmt.Errorf("对象 key 不安全 %s: %w", o.Key, err)
+		dest := ""
+		if isSingleFile && opt.LocalFile != "" {
+			// -d 回查上传时的文件路径：落盘回原始文件路径
+			dest = opt.LocalFile
+		} else {
+			var err error
+			dest, err = SafeJoin(localRoot, rel)
+			if err != nil {
+				return fmt.Errorf("对象 key 不安全 %s: %w", o.Key, err)
+			}
 		}
 		jobs = append(jobs, dlJob{key: o.Key, dest: dest, rel: rel, etag: o.ETag, size: o.Size})
 		totalBytes += o.Size
@@ -141,14 +150,8 @@ func Download(ctx context.Context, client *tos.ClientV2, cfg config.Config, opt 
 		}
 		toDo = append(toDo, j)
 	}
-	callOnCompleted := func() {
-		if opt.OnCompleted != nil {
-			opt.OnCompleted(strings.TrimSuffix(remotePrefix, "/"), localRoot)
-		}
-	}
 	if len(toDo) == 0 {
 		fmt.Fprintf(w, "所有文件已在清单中，无需下载 ✅\n")
-		callOnCompleted()
 		return nil
 	}
 
@@ -158,6 +161,19 @@ func Download(ctx context.Context, client *tos.ClientV2, cfg config.Config, opt 
 	}
 	progress := ui.NewProgress(len(toDo), totalBytes-skipBytes, opt.Quiet, w)
 	progress.Start()
+
+	// 任务记录：开始（只统计实际待下载的文件）
+	taskID := int64(0)
+	var recorder DownloadRecorder = opt.Recorder
+	if recorder != nil {
+		id, err := recorder.OnTaskBegin(opt.Path, len(toDo), totalBytes-skipBytes)
+		if err != nil {
+			fmt.Fprintf(w, "⚠️ 任务记录失败（继续下载，不记录）: %v\n", err)
+			recorder = nil
+		} else {
+			taskID = id
+		}
+	}
 
 	var wg sync.WaitGroup
 	jobCh := make(chan dlJob)
@@ -175,6 +191,14 @@ func Download(ctx context.Context, client *tos.ClientV2, cfg config.Config, opt 
 		defer mu.Unlock()
 		return firstErr != nil
 	}
+	// 因前序失败而未执行的文件数（用于总结提示）
+	var skipMu sync.Mutex
+	skippedCount := 0
+	countSkip := func() {
+		skipMu.Lock()
+		skippedCount++
+		skipMu.Unlock()
+	}
 
 	for i := 0; i < concurrency; i++ {
 		wg.Add(1)
@@ -182,23 +206,35 @@ func Download(ctx context.Context, client *tos.ClientV2, cfg config.Config, opt 
 			defer wg.Done()
 			for j := range jobCh {
 				if cancelled() {
+					// 前序文件已失败：剩余任务不执行（未执行不计入失败数，仅提示跳过）
+					progress.Skip(j.key)
+					countSkip()
 					continue
 				}
 				if err := os.MkdirAll(filepath.Dir(j.dest), 0o755); err != nil {
 					reportErr(err)
 					progress.Fail(j.key, err)
+					if recorder != nil {
+						_ = recorder.OnProgress(taskID, 0, 0, 1)
+					}
 					continue
 				}
-				if err := DownloadOne(ctx, client, cfg.Bucket, j.key, j.dest, j.size); err != nil {
+				if err := DownloadOne(ctx, client, bucket, j.key, j.dest, j.size, opt.PartSize, opt.TaskNum, checkpointDir); err != nil {
 					reportErr(err)
 					progress.Fail(j.key, err)
+					if recorder != nil {
+						_ = recorder.OnProgress(taskID, 0, 0, 1)
+					}
 				} else {
 					if err := man.MarkDone(manifest.Object{Key: j.key, ETag: j.etag, Rel: j.rel, Size: j.size}); err != nil {
-						reportErr(err)
-						progress.Fail(j.key, err)
-						continue
+						// 文件已成功下载，仅清单更新失败：提示但不中断任务。
+						// 下次下载时该 key 不在清单中，会按 ETag 校验重新下载。
+						fmt.Fprintf(w, "  ⚠️ 下载清单更新失败（文件已下载，下次将重下）: %v\n", err)
 					}
 					progress.Done(j.key, j.size)
+					if recorder != nil {
+						_ = recorder.OnProgress(taskID, 1, j.size, 0)
+					}
 				}
 			}
 		}()
@@ -210,11 +246,26 @@ func Download(ctx context.Context, client *tos.ClientV2, cfg config.Config, opt 
 	wg.Wait()
 	progress.Finish()
 
+	if skippedCount > 0 {
+		fmt.Fprintf(w, "其余 %d 个文件已跳过（因前序失败，未执行）\n", skippedCount)
+	}
+
+	// 任务记录：结束
+	if recorder != nil {
+		status, errMsg := "done", ""
+		if firstErr != nil {
+			status = "break"
+			errMsg = firstErr.Error()
+		}
+		if err := recorder.OnFinish(taskID, status, errMsg); err != nil {
+			fmt.Fprintf(w, "⚠️ 任务状态记录失败: %v\n", err)
+		}
+	}
+
 	if firstErr != nil {
 		return fmt.Errorf("下载失败: %w", firstErr)
 	}
 	fmt.Fprintf(w, "下载完成 ✅\n")
-	callOnCompleted()
 	return nil
 }
 
@@ -230,42 +281,44 @@ func skipCompleted(overwrite bool, recordedETag, remoteETag, dest string) bool {
 	return err == nil
 }
 
-// detectRemoteName 列出 contract/spi/ 下的一级子项，若只有一个非目录占位子项则返回其名字。
-func detectRemoteName(ctx context.Context, client *tos.ClientV2, bucket, contract, spiID string) (string, error) {
-	prefix := spi.TargetKey(contract, spiID) + "/"
-	objs, err := ListAll(ctx, client, bucket, prefix)
+// resolveDownloadSource 确定实际要下载的远端文件列表。
+// 优先按目录前缀（带尾斜杠）列出；目录下没有文件时回退到“精确对象 key”模式，
+// 以支持 up 单文件或顶层软链接上传（对象 key 不带尾斜杠，前缀 + "/" 永远列不到）。
+// 返回：文件列表、实际使用的前缀、是否单文件模式。
+func resolveDownloadSource(ctx context.Context, list func(ctx context.Context, bucket, prefix string) ([]tos.ListedObjectV2, error), bucket, remotePrefix string) ([]tos.ListedObjectV2, string, bool, error) {
+	objs, err := list(ctx, bucket, remotePrefix)
 	if err != nil {
-		return "", err
+		return nil, "", false, err
 	}
-	set := map[string]bool{}
+	files := collectFiles(objs)
+	if len(files) > 0 {
+		return files, remotePrefix, false, nil
+	}
+	// 目录前缀没有文件：尝试精确对象 key（单文件/顶层软链接上传场景）
+	exactKey := strings.TrimSuffix(remotePrefix, "/")
+	if exactKey == "" {
+		return files, remotePrefix, false, nil
+	}
+	exactObjs, err := list(ctx, bucket, exactKey)
+	if err != nil {
+		return files, remotePrefix, false, nil // 精确探测失败不阻断，按空目录处理
+	}
+	for _, o := range exactObjs {
+		if o.Key == exactKey && !(strings.HasSuffix(o.Key, "/") && o.Size == 0) {
+			return []tos.ListedObjectV2{o}, exactKey, true, nil
+		}
+	}
+	return files, remotePrefix, false, nil
+}
+
+// collectFiles 从对象列表中过滤目录占位对象，返回真正的文件列表。
+func collectFiles(objs []tos.ListedObjectV2) []tos.ListedObjectV2 {
+	files := make([]tos.ListedObjectV2, 0, len(objs))
 	for _, o := range objs {
 		if strings.HasSuffix(o.Key, "/") && o.Size == 0 {
 			continue
 		}
-		rel := strings.TrimPrefix(o.Key, prefix)
-		seg := rel
-		if idx := strings.Index(seg, "/"); idx >= 0 {
-			seg = seg[:idx]
-		}
-		if seg != "" {
-			set[seg] = true
-		}
+		files = append(files, o)
 	}
-	switch len(set) {
-	case 0:
-		return "", fmt.Errorf("远端 %s 下没有文件，请检查 contract/spi 是否正确", strings.TrimSuffix(prefix, "/"))
-	case 1:
-		for k := range set {
-			return k, nil
-		}
-	}
-	return "", fmt.Errorf("远端 %s 下有多个子项 %v，请用 -name 指定要下载的文件夹", strings.TrimSuffix(prefix, "/"), keysOf(set))
-}
-
-func keysOf(m map[string]bool) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	return out
+	return files
 }
