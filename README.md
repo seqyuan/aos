@@ -10,16 +10,35 @@
 - **`check`**：连接与权限诊断（按 region 自动尝试公网 endpoint 回退）
 - **`config`**：查看 / 配置凭据
 
+## 安装
+
+需要 Go 1.26+。三种方式任选其一，安装后把 `aos.json`（凭据文件）放到 **aos 二进制同目录**即可使用（随二进制一起拷贝到任何机器都可用，见「配置」）。
+
+**方式一：GitHub Release 下载（推荐）** —— 二进制自带正确版本号，附 SHA256SUMS 校验：
+
+https://github.com/seqyuan/aos/releases （Linux 产物 `aos-linux-amd64` / `aos-linux-arm64`）
+
+**方式二：go install 装到 `$GOBIN`**（默认 `~/go/bin`，确保其在 PATH）：
+
+```bash
+# 远程安装最新 tag 版本（@latest = 最新 git tag）
+# 注意：go install 不注入版本号，aos version 会显示 dev
+# 在线说明：https://seqyuan.github.io/aos/
+go install github.com/seqyuan/aos/cmd/aos@latest
+
+# 或在 clone 的仓库内编译并注入 git 版本号（推荐，version 正确显示）
+go install -ldflags="-s -w -X main.version=$(git describe --tags --always --dirty)" ./cmd/aos
+```
+
+**方式三：本地源码编译**：
+
+```bash
+go build -o aos ./cmd/aos   # version 显示 dev；要带版本号用 make build（自动取 git tag）
+```
+
 ## 快速开始
 
 ```bash
-# 编译
-go build -o aos ./cmd/aos
-
-# Linux 二进制也可从 Release 下载：
-# https://github.com/seqyuan/aos/releases
-# 在线说明：https://seqyuan.github.io/aos/
-
 # 查看配置（凭据文件与二进制同目录，随二进制一起拷贝即可使用）
 ./aos config
 
