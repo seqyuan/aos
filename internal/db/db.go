@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/seqyuan/aos/internal/sqldsn"
@@ -293,13 +294,25 @@ func (d *DB) FindTaskByLocalPath(localPath string) (Task, error) {
 	return Task{}, fmt.Errorf("没有找到从路径 %q 上传过的任务（该路径需与 cp 上传时的本地路径一致，或用 aos stat 查看任务）", localPath)
 }
 
-// FindTaskByRemotePrefix 按远端前缀（tos://bucket/prefix）查找最近一次上传任务（仅匹配 up）。
+// FindTaskByRemotePrefix 按远端前缀查找最近一次成功完成的上传任务（仅 direction=up 且 status=done）。
 // 用于普通下载完成后按远端前缀匹配 up 任务，还原其软链接记录。
+// 先精确匹配 tos://bucket/前缀；没有命中时再试 v0.4.4 之前的裸前缀（不含 tos://bucket/）。
 func (d *DB) FindTaskByRemotePrefix(remotePrefix string) (Task, bool, error) {
+	t, ok, err := d.lookupDoneUpByRemotePrefix(remotePrefix)
+	if err != nil || ok {
+		return t, ok, err
+	}
+	if bare := legacyBarePrefix(remotePrefix); bare != "" && bare != remotePrefix {
+		return d.lookupDoneUpByRemotePrefix(bare)
+	}
+	return Task{}, false, nil
+}
+
+func (d *DB) lookupDoneUpByRemotePrefix(remotePrefix string) (Task, bool, error) {
 	rows, err := d.Query(`SELECT id, direction, spi, contract, local_path, remote_prefix, total_files, total_bytes,
 		done_files, done_bytes, failed_files, status, COALESCE(error,''),
 		started_at, COALESCE(finished_at,0), updated_at FROM tasks
-		WHERE remote_prefix=? AND direction='up' ORDER BY id DESC LIMIT 1`, remotePrefix)
+		WHERE remote_prefix=? AND direction='up' AND status='done' ORDER BY id DESC LIMIT 1`, remotePrefix)
 	if err != nil {
 		return Task{}, false, err
 	}
@@ -320,6 +333,19 @@ func (d *DB) FindTaskByRemotePrefix(remotePrefix string) (Task, bool, error) {
 	}
 	t.UpdatedAt = time.Unix(upd, 0)
 	return t, true, rows.Err()
+}
+
+// legacyBarePrefix 把 tos://bucket/prefix 收成旧任务库里的裸 prefix；无法解析则返回空串。
+func legacyBarePrefix(remotePrefix string) string {
+	rest, ok := strings.CutPrefix(remotePrefix, "tos://")
+	if !ok {
+		return ""
+	}
+	_, after, found := strings.Cut(rest, "/")
+	if !found || after == "" {
+		return ""
+	}
+	return after
 }
 
 func localPathCandidates(localPath string) []string {

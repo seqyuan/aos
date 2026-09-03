@@ -25,7 +25,7 @@ func cmdCP(args []string) int {
 	var b baseFlags
 	b.register(fs)
 	// 通用
-	job := fs.IntP("job", "j", 0, "文件级并发（默认按 CPU 核数）")
+	job := fs.IntP("job", "j", 0, "文件级并发（默认按 CPU 核数，最少 4、最多 16）")
 	partTask := fs.IntP("part-task", "p", 0, "单文件分片并发（默认 4）")
 	partSize := fs.String("part-size", "", "分片大小（大文件，默认 20MB，支持 5MB~5GB，如 20MB）")
 	quiet := fs.BoolP("quiet", "q", false, "安静模式")
@@ -51,7 +51,7 @@ func cmdCP(args []string) int {
 		fmt.Fprintln(os.Stderr, "aos cp: 最多 2 个位置参数（<源> [<目标>]）")
 		return 2
 	}
-	isTOS := func(s string) bool { return strings.Contains(s, "://") }
+	isTOS := isTOSPath
 
 	// ---- 方向判定 ----
 	var src string
@@ -139,6 +139,7 @@ func cmdCP(args []string) int {
 			}
 		}
 		opt := tosx.UploadOptions{
+			Bucket:       tp.Bucket,
 			TargetPrefix: tp.Prefix,
 			LocalPath:    pos[0],
 			Concurrency:  *job,
@@ -248,16 +249,22 @@ func restoreLinksAfterDownload(dbPath string, restoreDB *db.DB, restoreTask db.T
 	// 普通下载：解析远端前缀（tos://bucket/prefix），匹配最近的 up 任务
 	tp, err := tosx.ParseTOSPath(tosPath, defaultBucket)
 	if err != nil {
-		return nil // 无法解析远端路径，跳过还原
+		fmt.Fprintf(os.Stderr, "aos cp: 跳过还原软链接（无法解析远端路径）: %v\n", err)
+		return nil
 	}
 	remotePrefix := "tos://" + tp.Bucket + "/" + strings.TrimSuffix(tp.Prefix, "/")
 	database, err := openDB(dbPath)
 	if err != nil {
-		return nil // 无法打开数据库，跳过还原
+		fmt.Fprintf(os.Stderr, "aos cp: 跳过还原软链接（无法打开任务库）: %v\n", err)
+		return nil
 	}
 	defer database.Close()
 	upTask, ok, err := database.FindTaskByRemotePrefix(remotePrefix)
-	if err != nil || !ok {
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "aos cp: 跳过还原软链接（查询任务库失败）: %v\n", err)
+		return nil
+	}
+	if !ok {
 		return nil // 无匹配 up 任务，跳过还原
 	}
 	return restoreSymlinks(database, upTask.ID, localDir)
@@ -390,19 +397,50 @@ func restoreSymlinks(database *db.DB, taskID int64, localDir string) error {
 	for _, l := range links {
 		target := localDir
 		if l.Rel != "" {
-			target = filepath.Join(localDir, filepath.FromSlash(l.Rel))
+			joined, err := tosx.SafeJoin(localDir, l.Rel)
+			if err != nil {
+				return fmt.Errorf("软链接路径不安全 %q: %w", l.Rel, err)
+			}
+			target = joined
 		}
 		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 			return fmt.Errorf("创建目录失败: %w", err)
 		}
-		// 移除已下载的文本文件（或上次还原残留的旧链接），再重建 symlink
-		if err := os.Remove(target); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("移除文本文件 %s: %w", target, err)
-		}
-		if err := os.Symlink(l.Target, target); err != nil {
+		if err := replaceWithSymlink(target, l.Target); err != nil {
 			return fmt.Errorf("还原软链接 %s -> %s: %w", target, l.Target, err)
 		}
 	}
 	fmt.Printf("还原 %d 个软链接（内容为链接目标地址）\n", len(links))
+	return nil
+}
+
+// isTOSPath 判断是否为云上路径。必须是 tos:// 前缀，拒绝 http://、s3:// 等。
+func isTOSPath(s string) bool {
+	return strings.HasPrefix(s, "tos://")
+}
+
+// replaceWithSymlink 把 path 替换为指向 linkTarget 的 symlink。
+// 先在同目录建临时链接再 rename，避免 Remove 成功但 Symlink 失败时丢掉已下载的文本文件。
+func replaceWithSymlink(path, linkTarget string) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".aos-link-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpName)
+		return err
+	}
+	if err := os.Remove(tmpName); err != nil {
+		return err
+	}
+	if err := os.Symlink(linkTarget, tmpName); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		_ = os.Remove(tmpName)
+		return err
+	}
 	return nil
 }

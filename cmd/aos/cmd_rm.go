@@ -21,7 +21,7 @@ func cmdRM(args []string) int {
 	recursive := fs.BoolP("recursive", "r", false, "递归删除前缀下所有对象，并顺带清理该前缀下的未完成分片上传任务")
 	force := fs.BoolP("force", "f", false, "跳过批量删除前的确认")
 	quiet := fs.BoolP("quiet", "q", false, "安静模式")
-	usage := "用法: aos rm <tos路径> [选项]\n\n删除单个对象（精确 key，直接删）:\n  aos rm tos://example-bucket/ACME2026001/PM-ACME2026001-01/dataset.zip\n\n递归删除前缀下所有对象（含孤儿分片清理，需确认）:\n  aos rm tos://example-bucket/ACME2026001/PM-ACME2026001-01/dataset -r\n  aos rm tos://example-bucket/ACME2026001/PM-ACME2026001-01/dataset -r -f   # 跳过确认\n\n说明:\n  - 单对象删除直接执行、不询问；对象不存在视为删除成功（幂等）\n  - -r 递归删除时先列出数量并询问（y/N），-f 跳过；非终端环境默认拒绝，需加 -f\n  - -r 会顺带 abort 该前缀下未完成的分片上传任务（断点续传中断残留的孤儿分片）\n  - 删除过程不逐条打印，完成后报告删除总数与分片清理数\n  - 开启版本控制的 bucket 上，删除对象仅生成 delete marker，历史版本不会真正删除（S3 语义）"
+	usage := "用法: aos rm <tos路径> [选项]\n\n删除单个对象（精确 key，直接删）:\n  aos rm tos://example-bucket/ACME2026001/PM-ACME2026001-01/dataset.zip\n\n递归删除前缀下所有对象（含孤儿分片清理，需确认）:\n  aos rm tos://example-bucket/ACME2026001/PM-ACME2026001-01/dataset -r\n  aos rm tos://example-bucket/ACME2026001/PM-ACME2026001-01/dataset -r -f   # 跳过确认\n\n说明:\n  - 单对象删除直接执行、不询问；对象不存在视为删除成功（幂等）\n  - -r 递归删除时先列出数量并询问（y/N），-f 跳过；非终端环境默认拒绝，需加 -f\n  - aos rm tos://bucket -r 会删除整个桶，确认提示标明「整个 bucket」；-f 仍会先打印警告\n  - -r 会顺带 abort 该前缀下未完成的分片上传任务（断点续传中断残留的孤儿分片）\n  - 删除过程不逐条打印，完成后报告删除总数与分片清理数；对象删除或分片 abort 失败均非零退出\n  - 开启版本控制的 bucket 上，删除对象仅生成 delete marker，历史版本不会真正删除（S3 语义）"
 	if ok, err := parseFlagSet(fs, args, usage); !ok {
 		return 2
 	} else if err != nil {

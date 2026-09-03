@@ -3,6 +3,7 @@ package tosx
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -197,5 +198,66 @@ func TestRMRecursiveSkipsDirPlaceholder(t *testing.T) {
 	// 占位对象 d/ 不应出现在删除列表里
 	if res.DeletedObjects != 1 {
 		t.Fatalf("res=%+v batch=%v", res, st.batchCalls)
+	}
+}
+
+func TestRMRecursiveWholeBucketWarns(t *testing.T) {
+	ops, st := fakeOps()
+	st.listObjects = []tos.ListedObjectV2{{Key: "a.txt", Size: 1}, {Key: "b.txt", Size: 2}}
+	var buf bytes.Buffer
+	res, err := rmExecute(context.Background(), ops, "b", "", RMOptions{
+		Recursive: true,
+		Force:     true,
+	}, &buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.DeletedObjects != 2 {
+		t.Fatalf("res=%+v", res)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "整个 bucket") && !strings.Contains(out, "整桶") {
+		t.Fatalf("空前缀递归删除应警告整桶: %q", out)
+	}
+}
+
+func TestRMRecursiveWholeBucketConfirmPrompt(t *testing.T) {
+	ops, st := fakeOps()
+	st.listObjects = []tos.ListedObjectV2{{Key: "a.txt", Size: 1}}
+	var buf bytes.Buffer
+	var prompt string
+	_, err := rmExecute(context.Background(), ops, "b", "", RMOptions{
+		Recursive: true,
+		Confirm: func(p string) (bool, error) {
+			prompt = p
+			return false, nil
+		},
+	}, &buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(prompt, "整个 bucket") && !strings.Contains(prompt, "整桶") {
+		t.Fatalf("确认提示应标明整桶: %q", prompt)
+	}
+}
+
+func TestRMAbortFailureReturnsError(t *testing.T) {
+	ops, st := fakeOps()
+	st.listObjects = []tos.ListedObjectV2{{Key: "d/a.txt", Size: 1}}
+	st.uploads = []tos.ListedUpload{{Key: "d/big.bin", UploadID: "u1"}}
+	st.abortErr = fmt.Errorf("abort failed")
+	var buf bytes.Buffer
+	res, err := rmExecute(context.Background(), ops, "b", "d/", RMOptions{
+		Recursive: true,
+		Force:     true,
+	}, &buf)
+	if err == nil {
+		t.Fatal("分片 abort 失败应返回错误")
+	}
+	if res.AbortedUploads != 0 || res.AbortFailed != 1 {
+		t.Fatalf("res=%+v", res)
+	}
+	if !strings.Contains(err.Error(), "分片") && !strings.Contains(err.Error(), "清理失败") {
+		t.Fatalf("错误应提及分片清理失败: %v", err)
 	}
 }

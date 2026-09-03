@@ -16,6 +16,7 @@ func TestCPDirectionErrors(t *testing.T) {
 		want string
 	}{
 		{[]string{"cp", "./a", "./b"}, "本地到本地拷贝不支持"},
+		{[]string{"cp", "./a", "http://example/x"}, "本地到本地拷贝不支持"},
 		{[]string{"cp", "tos://a/x", "tos://b/y"}, "云端拷贝"},
 		{[]string{"cp"}, "缺少参数"},
 		{[]string{"cp", "a", "b", "c"}, "最多 2 个位置参数"},
@@ -69,10 +70,13 @@ func TestIsTOSPath(t *testing.T) {
 		{"./dataset", false},
 		{"dataset", false},
 		{"/abs/path", false},
+		{"http://evil/key", false},
+		{"s3://bucket/key", false},
+		{"https://example/x", false},
 	}
 	for _, c := range cases {
-		if got := strings.Contains(c.in, "://"); got != c.want {
-			t.Errorf("isTOS(%q) = %v, want %v", c.in, got, c.want)
+		if got := isTOSPath(c.in); got != c.want {
+			t.Errorf("isTOSPath(%q) = %v, want %v", c.in, got, c.want)
 		}
 	}
 }

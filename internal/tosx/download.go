@@ -144,7 +144,7 @@ func Download(ctx context.Context, client *tos.ClientV2, cfg config.Config, opt 
 	cachedSkip := 0 // 清单 ETag 未变而跳过的已完成文件数
 	var skipBytes int64
 	for _, j := range jobs {
-		if skipCompleted(opt.Overwrite, done[j.key], j.etag, j.dest) {
+		if skipCompleted(opt.Overwrite, done[j.key], j.etag, j.dest, j.size) {
 			cachedSkip++
 			skipBytes += j.size
 			continue
@@ -156,10 +156,7 @@ func Download(ctx context.Context, client *tos.ClientV2, cfg config.Config, opt 
 		return nil
 	}
 
-	concurrency := opt.Concurrency
-	if concurrency <= 0 {
-		concurrency = defaultConcurrency()
-	}
+	concurrency := clampConcurrency(opt.Concurrency)
 	progress := ui.NewProgress(len(toDo), totalBytes-skipBytes, opt.Quiet, w)
 	progress.Start()
 
@@ -273,16 +270,22 @@ func Download(ctx context.Context, client *tos.ClientV2, cfg config.Config, opt 
 	return nil
 }
 
-// skipCompleted 清单中有相同 ETag 且本地目标仍存在时跳过。不比较文件大小。
-func skipCompleted(overwrite bool, recordedETag, remoteETag, dest string) bool {
+// skipCompleted 清单中有相同 ETag、本地目标仍存在、且（非软链接时）大小与远端一致才跳过。
+func skipCompleted(overwrite bool, recordedETag, remoteETag, dest string, remoteSize int64) bool {
 	if overwrite {
 		return false
 	}
 	if recordedETag == "" || recordedETag != manifest.NormalizeETag(remoteETag) {
 		return false
 	}
-	_, err := os.Lstat(dest)
-	return err == nil
+	st, err := os.Lstat(dest)
+	if err != nil {
+		return false
+	}
+	if st.Mode()&os.ModeSymlink != 0 {
+		return true
+	}
+	return st.Size() == remoteSize
 }
 
 // resolveDownloadSource 确定实际要下载的远端文件列表。

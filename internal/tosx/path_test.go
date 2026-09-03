@@ -39,16 +39,19 @@ func TestSkipCompleted(t *testing.T) {
 	if err := os.WriteFile(f, []byte("hello"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if !skipCompleted(false, "abc", `"abc"`, f) {
-		t.Fatal("matching etag + dest exists should skip")
+	if !skipCompleted(false, "abc", `"abc"`, f, 5) {
+		t.Fatal("matching etag + dest exists + size 应跳过")
 	}
-	if skipCompleted(true, "abc", "abc", f) {
+	if skipCompleted(false, "abc", `"abc"`, f, 99) {
+		t.Fatal("本地文件比远端小（截断）不应跳过")
+	}
+	if skipCompleted(true, "abc", "abc", f, 5) {
 		t.Fatal("overwrite should not skip")
 	}
-	if skipCompleted(false, "old", "new", f) {
+	if skipCompleted(false, "old", "new", f, 5) {
 		t.Fatal("etag change should not skip")
 	}
-	if skipCompleted(false, "", "abc", f) {
+	if skipCompleted(false, "", "abc", f, 5) {
 		t.Fatal("not in manifest should not skip")
 	}
 
@@ -56,11 +59,11 @@ func TestSkipCompleted(t *testing.T) {
 	if err := os.Symlink("/data/share/big.bam", link); err != nil {
 		t.Skipf("无法创建软链接: %v", err)
 	}
-	if !skipCompleted(false, "t", "t", link) {
-		t.Fatal("本地为软链接时同样应跳过（Lstat 存在即可）")
+	if !skipCompleted(false, "t", "t", link, 999) {
+		t.Fatal("本地为软链接时按存在即跳过（size 不适用）")
 	}
 	missing := filepath.Join(dir, "nope")
-	if skipCompleted(false, "t", "t", missing) {
+	if skipCompleted(false, "t", "t", missing, 5) {
 		t.Fatal("missing dest should not skip even if listed")
 	}
 }
