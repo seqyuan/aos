@@ -48,6 +48,8 @@ func run(args []string) int {
 		return cmdCP(rest)
 	case "stat":
 		return cmdStat(rest)
+	case "rm", "remove":
+		return cmdRM(rest)
 	case "config":
 		return cmdConfig(rest)
 	case "check":
@@ -423,6 +425,7 @@ func printUsage(w *os.File) {
 用法:
   aos cp <源> [<目标>] [选项]      上传/下载（云上路径带 tos:// 前缀，方向由参数顺序决定）
   aos ls <tos路径> [选项]          以目录树形式列出目标路径下的文件
+  aos rm <tos路径> [选项]          删除对象（-r 递归删除前缀，-f 跳过确认）
   aos stat [选项]                  查询传输历史（上传/下载均记录；默认：中断/失败 + 近 2 天；-a 全部）
   aos check [选项]                 诊断连接与权限
   aos config [set] [选项]          查看/配置凭据
@@ -441,6 +444,11 @@ cp 示例（下载：tos 在前）:
 ls 示例:
   aos ls tos://example-bucket/ACME2026001
   aos ls tos:///ACME2026001/PM-ACME2026001-01/dataset
+
+rm 示例:
+  aos rm tos://bucket/prefix/file.zip          # 删除单个对象（直接删，幂等）
+  aos rm tos://bucket/ACME2026001 -r           # 递归删除前缀下所有对象（提示确认）
+  aos rm tos://bucket/ACME2026001 -r -f        # 跳过确认
 
 stat 示例:
   aos stat                # 中断/失败 + 近 2 天的任务
