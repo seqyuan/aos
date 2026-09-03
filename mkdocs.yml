@@ -42,5 +42,11 @@ markdown_extensions:
 plugins:
   - search
 
+# 设计文档/内部计划不发布为站点页面
+exclude_docs: plans/
+
+# 站点根 README/CHANGELOG 由 make docs/sync 生成
+#（见 Makefile，复制到 docs/index.md 与 docs/changelog.md）
+
 extra:
   generator: false
