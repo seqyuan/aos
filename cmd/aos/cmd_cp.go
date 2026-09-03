@@ -35,7 +35,7 @@ func cmdCP(args []string) int {
 	exclude := fs.String("e", "", "排除规则，逗号分隔，支持通配符，如 *.tmp,.git")
 	followLinks := fs.Bool("follow-links", false, "软链接溯源上传链接目标的真实内容（这些文件不记录任务数据库）")
 	checkpoint := fs.Bool("checkpoint", false, "大文件分片上传断点续传（checkpoint 存于上传根目录 .aos/checkpoints/）")
-	noRecord := fs.Bool("no-record", false, "上传不写入任务记录数据库")
+	noRecord := fs.Bool("no-record", false, "本次传输不写入任务记录数据库（上传/下载均可用）")
 	// 下载
 	force := fs.Bool("f", false, "忽略下载清单，全部重下")
 	noCheckpoint := fs.Bool("no-checkpoint", false, "关闭大文件分片下载断点续传（默认开启）")

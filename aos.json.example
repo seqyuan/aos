@@ -1,5 +1,5 @@
 {
-  "endpoint": "https://tos-cn-beijing.volces.com",
+  "endpoint": "tos-cn-beijing.volces.com",
   "region": "cn-beijing",
   "bucket": "example-bucket",
   "access_key_id": "AKLTxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",

@@ -135,7 +135,8 @@ func isCRCError(err error) bool {
 
 // cleanupDownloadResidue 清理断点续传失败后残留的 checkpoint 与临时文件。
 // checkpoint 文件名由 SDK 内部生成（<文件名>.<bucket/key 哈希>.download），
-// 临时文件名为 <目标文件>.temp.<时间戳>，这里按前缀匹配删除，不依赖 SDK 内部命名细节。
+// 临时文件名为 <目标文件>.temp（SDK TempFileSuffix，曾出现过带时间戳后缀的旧实现），
+// 这里按精确名/前缀匹配删除，不依赖 SDK 内部命名细节。
 func cleanupDownloadResidue(checkpointDir, localPath string) error {
 	var firstErr error
 	remove := func(p string) {
@@ -151,11 +152,12 @@ func cleanupDownloadResidue(checkpointDir, localPath string) error {
 			}
 		}
 	}
-	// temp 文件与目标文件同目录
+	// temp 文件与目标文件同目录：SDK 实际命名为 <目标文件>.temp
 	if entries, err := os.ReadDir(filepath.Dir(localPath)); err == nil {
 		for _, e := range entries {
-			if strings.HasPrefix(e.Name(), base+".temp.") {
-				remove(filepath.Join(filepath.Dir(localPath), e.Name()))
+			name := e.Name()
+			if name == base+".temp" || strings.HasPrefix(name, base+".temp.") {
+				remove(filepath.Join(filepath.Dir(localPath), name))
 			}
 		}
 	}

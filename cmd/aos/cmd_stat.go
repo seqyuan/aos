@@ -11,7 +11,7 @@ import (
 	"github.com/seqyuan/aos/internal/human"
 )
 
-// cmdStat aos stat：查询上传任务状态（默认只看中断/失败与近 2 天的任务，-a 显示全部）。
+// cmdStat aos stat：查询传输历史（上传/下载均记录；默认只看中断/失败与近 2 天的任务，-a 显示全部）。
 func cmdStat(args []string) int {
 	fs := flag.NewFlagSet("aos stat", flag.ContinueOnError)
 	all := fs.Bool("a", false, "显示全部任务（默认只显示中断/失败与近 2 天的任务）")

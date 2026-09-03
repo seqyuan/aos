@@ -28,7 +28,7 @@ import (
 )
 
 // version 由构建注入（git tag / CI）；本地 go build 时为当前版本号。
-var version = "v0.3.0"
+var version = "v0.3.1"
 
 func main() {
 	os.Exit(run(os.Args[1:]))
@@ -445,7 +445,7 @@ func printUsage(w *os.File) {
 用法:
   aos cp <源> [<目标>] [选项]      上传/下载（云上路径带 tos:// 前缀，方向由参数顺序决定）
   aos ls <tos路径> [选项]          以目录树形式列出目标路径下的文件
-  aos stat [选项]                  查询上传历史（默认：中断/失败 + 近 2 天；-a 全部）
+  aos stat [选项]                  查询传输历史（上传/下载均记录；默认：中断/失败 + 近 2 天；-a 全部）
   aos check [选项]                 诊断连接与权限
   aos config [set] [选项]          查看/配置凭据
   aos version                      版本号

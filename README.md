@@ -1,6 +1,6 @@
 # aos
 
-对象存储上传 / 下载 / 浏览命令行工具（Go 编写，单二进制分发）。当前后端为火山云 TOS；endpoint / region / bucket / AK/SK 放在配置文件里，后续接入其他对象存储时改配置即可。
+对象存储上传 / 下载 / 浏览命令行工具（Go 编写，单二进制分发）。当前后端为火山云 TOS：endpoint / region / bucket / AK/SK 放在配置文件里。传输实现集中在 `internal/tosx`（当前绑定火山云 TOS SDK），未来接入 S3 等其他对象存储时在该层抽取后端接口即可，命令行与配置层无需改动。
 
 ## 特性
 
@@ -31,7 +31,7 @@ go build -o aos ./cmd/aos
 ./aos cp /path/project1/dataset tos://example-bucket/ACME2026001/PM-ACME2026001-01/dataset
 ./aos cp ./dataset tos:///ACME2026001/PM-ACME2026001-01/dataset
 
-# 单文件上传（目标末段即对象 key）
+# 单文件上传（目标路径整体即对象 key，须写到文件名）
 ./aos cp dataset.zip tos://example-bucket/ACME2026001/PM-ACME2026001-01/dataset.zip
 
 # 下载：tos 在前，目标为本地目录（源前缀下的对象按相对路径落盘）
@@ -60,7 +60,7 @@ go build -o aos ./cmd/aos
 
 ## 配置
 
-配置文件 `aos.json` 位于 **aos 二进制所在目录**，随二进制一起拷贝即可在任何机器使用：
+配置文件 `aos.json` 位于 **aos 二进制所在目录**，随二进制一起拷贝即可在任何机器使用。查找顺序：命令行 `-config` 参数 → `AOS_CONFIG` 环境变量 → 二进制同目录 → 当前工作目录（最后一项仅为便于开发调试）：
 
 ```json
 {
@@ -94,7 +94,7 @@ go build -o aos ./cmd/aos
 ## 上传语义
 
 - 目标前缀**直接铺入**：本地目录 `./dataset` 下的每个文件，其 key = 目标前缀 + 相对路径
-- 目录默认递归上传；单文件上传时目标末段即对象 key
+- 目录默认递归上传；单文件上传时目标路径整体即对象 key（bucket 之后的全部内容，通常以文件名结尾）
 - 上传/下载任务均写入 SQLite（时间、方向 up/down、本地路径、远端路径、文件/字节进度、状态 running/done/break、错误信息），便于 `aos stat` 查看；`aos cp <本地路径>` 按上传记录还原
 - `-no-record` 可显式跳过记录
 - Ctrl+C / 报错退出时任务标记为 `break`，正常完成标记为 `done`
@@ -137,7 +137,7 @@ go build -o aos ./cmd/aos
 -no-checkpoint   关闭大文件分片下载断点续传（默认开启）
 
 数据库:
--db <路径>        sqlite 数据库路径（默认 ~/.config/aos.db，或 $XDG_CONFIG_HOME/aos.db，或 $AOS_DB）
+-db <路径>        sqlite 数据库路径（默认按 $AOS_DB → $XDG_CONFIG_HOME/aos.db → ~/.config/aos.db 的顺序取）
 ```
 
 ## ls 选项

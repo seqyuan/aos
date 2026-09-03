@@ -141,17 +141,18 @@ func Download(ctx context.Context, client *tos.ClientV2, cfg config.Config, opt 
 	fmt.Fprintf(w, "下载 %d 个文件（共 %s）到 %s\n", len(jobs), human.Size(totalBytes), localRoot)
 
 	toDo := jobs[:0]
+	cachedSkip := 0 // 清单 ETag 未变而跳过的已完成文件数
 	var skipBytes int64
 	for _, j := range jobs {
 		if skipCompleted(opt.Overwrite, done[j.key], j.etag, j.dest) {
-			fmt.Fprintf(w, "  跳过（已完成）%s\n", j.dest)
+			cachedSkip++
 			skipBytes += j.size
 			continue
 		}
 		toDo = append(toDo, j)
 	}
 	if len(toDo) == 0 {
-		fmt.Fprintf(w, "所有文件已在清单中，无需下载 ✅\n")
+		fmt.Fprintf(w, "所有文件已在清单中，无需下载 ✅（跳过 %d 个已完成文件，共 %s；-f 可强制重下）\n", cachedSkip, human.Size(skipBytes))
 		return nil
 	}
 
@@ -248,6 +249,9 @@ func Download(ctx context.Context, client *tos.ClientV2, cfg config.Config, opt 
 
 	if skippedCount > 0 {
 		fmt.Fprintf(w, "其余 %d 个文件已跳过（因前序失败，未执行）\n", skippedCount)
+	}
+	if cachedSkip > 0 && !opt.Quiet {
+		fmt.Fprintf(w, "跳过 %d 个已完成文件（共 %s，清单 .aos/manifest.db 中 ETag 未变；-f 可强制重下）\n", cachedSkip, human.Size(skipBytes))
 	}
 
 	// 任务记录：结束
