@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.4.3 — 2026-09-03
+
+- **新功能：`rm` 命令**——删除 TOS 对象（参考 tosutil rm，不做删桶）
+  - 单对象删除：`aos rm tos://bucket/dir/file.txt`——精确 key 直接删、幂等（不存在视为成功）、不询问
+  - 递归删除：`aos rm tos://bucket/dir -r` 删除前缀下所有对象并顺带清理该前缀未完成的分片上传任务；删除前提示数量并 y/N 确认（`-f` 跳过；非终端默认拒绝，防脚本误删）
+  - 批量删除并发执行（分批 ≤1000），单个失败不中断、完成后报告对象删除总数与分片清理数
+  - 路径必须为 `tos://` 开头的云上路径；开启版本控制的 bucket 上删除仅生成 delete marker（S3 语义）
+- **文档**：README 新增「安装」章节（Release 下载 / go install / go build 三种方式）；docs 站点改为构建时从根 README/CHANGELOG 复制生成（兼容 fresh checkout 下 docs/ 目录缺失）；mkdocs 排除 plans/ 设计文档目录
+
 ## v0.4.1 — 2026-09-03
 
 - **破坏性变更**：命令行 flag 迁移到 pflag，多字符选项由单横线改为双横线（`-ps`→`--part-size`、`-db`→`--db`、`-id`→`--id`、`-ak`/`-sk`→`--ak`/`--sk`、`-limit`→`--limit`、`-max-depth`→`--max-depth`、`-no-record`→`--no-record`、`-follow-links`→`--follow-links`、`-checkpoint`→`--checkpoint`、`-no-checkpoint`→`--no-checkpoint`、`-timeout`→`--timeout`、`-config`→`--config`、`-endpoint`→`--endpoint`、`-region`→`--region`、`-bucket`→`--bucket`）；单字符保留 shorthand（`-j -p -q -f -e -m -a`）并新增长名（`--job --part-task --quiet --force --exclude --mod --all`）
