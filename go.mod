@@ -1,8 +1,9 @@
 module github.com/seqyuan/aos
 
-go 1.26.5
+go 1.26
 
 require (
+	github.com/spf13/pflag v1.0.10
 	github.com/volcengine/ve-tos-golang-sdk/v2 v2.9.10
 	modernc.org/sqlite v1.57.0
 )

@@ -26,6 +26,10 @@ aos.yaml
 *.checkpoint
 *.tmp
 
+# ============ 文档页（make docs/sync 从根 README/CHANGELOG 复制生成） ============
+docs/index.md
+docs/changelog.md
+
 # ============ 系统/编辑器 ============
 .DS_Store
 __pycache__/

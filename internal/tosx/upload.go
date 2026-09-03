@@ -141,11 +141,12 @@ func Upload(ctx context.Context, client *tos.ClientV2, cfg config.Config, opt Up
 	}
 	// 溯源链接文件统计（不记录任务，仅用于总结提示）
 	var followMu sync.Mutex
-	followDone, followFail, followBytes := 0, 0, int64(0)
-	countFollow := func(done, failed int, bytes int64) {
+	followDone, followFail, followSkip, followBytes := 0, 0, 0, int64(0)
+	countFollow := func(done, failed, skipped int, bytes int64) {
 		followMu.Lock()
 		followDone += done
 		followFail += failed
+		followSkip += skipped
 		followBytes += bytes
 		followMu.Unlock()
 	}
@@ -166,16 +167,18 @@ func Upload(ctx context.Context, client *tos.ClientV2, cfg config.Config, opt Up
 				if j.followLink {
 					// 溯源链接文件：不记录任务数据库/进度；失败仅提示、不中断任务
 					if cancelled() {
+						// 前序普通文件已失败：溯源链接不执行，计数并在总结中提示（不中断、不记录任务）
+						countFollow(0, 0, 1, 0)
 						continue
 					}
 					err := UploadOne(ctx, client, cfg.Bucket, j.key, j.local, opt.Checkpoint, checkpointDir, opt.PartSize, opt.TaskNum)
 					if err != nil {
-						countFollow(0, 1, 0)
+						countFollow(0, 1, 0, 0)
 						followMu.Lock()
 						fmt.Fprintf(w, "  ⚠️ 溯源链接上传失败 %s: %v\n", j.key, err)
 						followMu.Unlock()
 					} else {
-						countFollow(1, 0, j.size)
+						countFollow(1, 0, 0, j.size)
 					}
 					continue
 				}
@@ -228,10 +231,13 @@ func Upload(ctx context.Context, client *tos.ClientV2, cfg config.Config, opt Up
 	if firstErr != nil {
 		return fmt.Errorf("上传失败: %w", firstErr)
 	}
-	if followDone > 0 || followFail > 0 {
+	if followDone > 0 || followFail > 0 || followSkip > 0 {
 		fmt.Fprintf(w, "溯源上传完成：%d 个链接文件（共 %s）", followDone, human.Size(followBytes))
 		if followFail > 0 {
 			fmt.Fprintf(w, "，失败 %d 个", followFail)
+		}
+		if followSkip > 0 {
+			fmt.Fprintf(w, "，跳过 %d 个（因前序失败未执行）", followSkip)
 		}
 		fmt.Fprintln(w)
 	}

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"flag"
 	"fmt"
 	"os"
 	"strings"
@@ -9,16 +8,17 @@ import (
 
 	"github.com/seqyuan/aos/internal/db"
 	"github.com/seqyuan/aos/internal/human"
+	"github.com/spf13/pflag"
 )
 
 // cmdStat aos stat：查询传输历史（上传/下载均记录；默认只看中断/失败与近 2 天的任务，-a 显示全部）。
 func cmdStat(args []string) int {
-	fs := flag.NewFlagSet("aos stat", flag.ContinueOnError)
-	all := fs.Bool("a", false, "显示全部任务（默认只显示中断/失败与近 2 天的任务）")
+	fs := pflag.NewFlagSet("aos stat", pflag.ContinueOnError)
+	all := fs.BoolP("all", "a", false, "显示全部任务（默认只显示中断/失败与近 2 天的任务）")
 	taskID := fs.Int64("id", 0, "查看指定任务详情")
 	limit := fs.Int("limit", 20, "最多列出多少条")
 	dbPath := fs.String("db", "", "sqlite 数据库路径（默认 ~/.config/aos.db）")
-	if ok, err := parseFlagSet(fs, args, "用法: aos stat [选项]\n\n示例:\n  aos stat            # 中断/失败 + 近 2 天的任务\n  aos stat -a         # 全部任务\n  aos stat -id 3      # 某次任务详情（错误信息等）"); !ok {
+	if ok, err := parseFlagSet(fs, args, "用法: aos stat [选项]\n\n示例:\n  aos stat            # 中断/失败 + 近 2 天的任务\n  aos stat -a         # 全部任务\n  aos stat --id 3     # 某次任务详情（错误信息等）"); !ok {
 		return 2
 	} else if err != nil {
 		return 2

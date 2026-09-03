@@ -6,7 +6,7 @@
 
 - **`cp`**：上传 / 下载统一命令，方向由位置参数顺序决定（云上路径带 `tos://` 前缀，与 tosutil 心智一致）
 - **`ls`**：以目录树形式列出目标路径下的文件（带大小、数量统计）
-- **`stat`**：查询传输历史（上传/下载均记录；默认只显示中断/失败与近 2 天的任务，`-a` 显示全部）；`-id` 查看单次任务详情
+- **`stat`**：查询传输历史（上传/下载均记录；默认只显示中断/失败与近 2 天的任务，`-a` 显示全部）；`--id` 查看单次任务详情
 - **`check`**：连接与权限诊断（按 region 自动尝试公网 endpoint 回退）
 - **`config`**：查看 / 配置凭据
 
@@ -44,8 +44,8 @@ go build -o aos ./cmd/aos
 # 任务状态
 ./aos stat                                      # 中断/失败 + 近 2 天的任务
 ./aos stat -a                                   # 全部任务
-./aos stat -id 3                                # 某次任务的详情（错误信息等）
-./aos stat -limit 50                            # 最多列出 50 条
+./aos stat --id 3                               # 某次任务的详情（错误信息等）
+./aos stat --limit 50                           # 最多列出 50 条
 
 `stat` 列表列：ID / 方向（up 上传、down 下载）/ 状态 / 文件进度 / 开始时间 / 完成或状态 / 路径（上传=本地路径，下载=tos 源路径）。
 
@@ -60,7 +60,7 @@ go build -o aos ./cmd/aos
 
 ## 配置
 
-配置文件 `aos.json` 位于 **aos 二进制所在目录**，随二进制一起拷贝即可在任何机器使用。查找顺序：命令行 `-config` 参数 → `AOS_CONFIG` 环境变量 → 二进制同目录 → 当前工作目录（最后一项仅为便于开发调试）：
+配置文件 `aos.json` 位于 **aos 二进制所在目录**，随二进制一起拷贝即可在任何机器使用。查找顺序：命令行 `--config` 参数 → `AOS_CONFIG` 环境变量 → 二进制同目录 → 当前工作目录（最后一项仅为便于开发调试）：
 
 ```json
 {
@@ -75,10 +75,10 @@ go build -o aos ./cmd/aos
 - **endpoint 说明**：
   - 内网 / 专线环境：`tos-cn-beijing.ivolces.com`（走火山云 VPC 内网，公网不可达）
   - 公网环境：`tos-cn-beijing.volces.com`
-- 修改配置：`./aos config set -ak AKLT... -sk WXpa... [-endpoint ...] [-region ...] [-bucket ...]`
+- 修改配置：`./aos config set --ak AKLT... --sk WXpa... [--endpoint ...] [--region ...] [--bucket ...]`
 - 查看配置文件实际路径：`./aos config path`
 - 可用环境变量覆盖（便于 CI）：`AOS_AK` / `AOS_SK` / `AOS_ENDPOINT` / `AOS_REGION` / `AOS_BUCKET`，或 `AOS_CONFIG` 指定配置文件路径
-- 单次命令覆盖：`-endpoint` / `-region` / `-bucket` 参数
+- 单次命令覆盖：`--endpoint` / `--region` / `--bucket` 参数
 
 ## 路径规则
 
@@ -96,7 +96,7 @@ go build -o aos ./cmd/aos
 - 目标前缀**直接铺入**：本地目录 `./dataset` 下的每个文件，其 key = 目标前缀 + 相对路径
 - 目录默认递归上传；单文件上传时目标路径整体即对象 key（bucket 之后的全部内容，通常以文件名结尾）
 - 上传/下载任务均写入 SQLite（时间、方向 up/down、本地路径、远端路径、文件/字节进度、状态 running/done/break、错误信息），便于 `aos stat` 查看；`aos cp <本地路径>` 按上传记录还原
-- `-no-record` 可显式跳过记录
+- `--no-record` 可显式跳过记录
 - Ctrl+C / 报错退出时任务标记为 `break`，正常完成标记为 `done`
 
 ## 下载进度（`.aos/manifest.db`）
@@ -112,7 +112,7 @@ go build -o aos ./cmd/aos
 ## 传输行为说明
 
 - **软链接**：默认不跟随，遍历时直接跳过（避免误传链接指向的共享大文件或造成循环）；本地路径本身为软链接时默认报错
-- **`-follow-links`**：软链接**溯源上传**链接目标的真实内容（key 仍用链接在项目中的相对路径）——目录链接递归展开并按 realpath 防循环、断链跳过并提示；这些溯源文件**不记录到任务数据库**（不计入 total/done/failed 统计）；**溯源链接上传失败仅提示，不中断任务**
+- **`--follow-links`**：软链接**溯源上传**链接目标的真实内容（key 仍用链接在项目中的相对路径）——目录链接递归展开并按 realpath 防循环、断链跳过并提示；这些溯源文件**不记录到任务数据库**（不计入 total/done/failed 统计）；**溯源链接上传失败仅提示，不中断任务**
 - **路径自动规范化**：`./abc//de/./f` 这类路径会自动规范为 `abc/de/f`，不会产生 `./`、`//`、`..` 段
 - 内置默认跳过 `.git/.svn/.DS_Store/.aos/__pycache__/._*/*.checkpoint/*.tmp`（跳过时会有汇总提示）
 
@@ -122,34 +122,34 @@ go build -o aos ./cmd/aos
 上传/下载通用:
 -j <N>           文件级并发（默认按 CPU 核数，最少 4、最多 16）
 -p <N>           单文件分片并发（默认 4）
--ps <大小>       分片大小（默认 20MB，支持 5MB~5GB，如 20MB 或 5m）
+--part-size <大小> 分片大小（默认 20MB，支持 5MB~5GB，如 20MB 或 5m）
 -q               安静模式
--no-record       不写入任务记录数据库
--timeout <时长>   传输总超时（默认 12h，如 30m、2h）
+--no-record      不写入任务记录数据库
+--timeout <时长>  传输总超时（默认 12h，如 30m、2h）
 
 上传:
--e <规则>         排除规则，逗号分隔，支持通配符（*.tmp,.git）；规则若以 - 开头请用 -e=规则 形式
--checkpoint       大文件分片上传断点续传（checkpoint 存于上传根目录 .aos/checkpoints/）
--follow-links     软链接溯源上传链接目标内容（这些文件不记录任务）
+-e <规则>         排除规则，逗号分隔，支持通配符（*.tmp,.git）；规则若以 - 开头请用 --exclude=规则 形式
+--checkpoint      大文件分片上传断点续传（checkpoint 存于上传根目录 .aos/checkpoints/）
+--follow-links    软链接溯源上传链接目标内容（这些文件不记录任务）
 
 下载:
 -f               忽略下载清单，全部重下
--no-checkpoint   关闭大文件分片下载断点续传（默认开启）
+--no-checkpoint  关闭大文件分片下载断点续传（默认开启）
 
 数据库:
--db <路径>        sqlite 数据库路径（默认按 $AOS_DB → $XDG_CONFIG_HOME/aos.db → ~/.config/aos.db 的顺序取）
+--db <路径>       sqlite 数据库路径（默认按 $AOS_DB → $XDG_CONFIG_HOME/aos.db → ~/.config/aos.db 的顺序取）
 ```
 
 ## ls 选项
 
 ```
--max-depth <N>   最大显示深度（0 表示不限制，默认全部显示）
+--max-depth <N>   最大显示深度（0 表示不限制，默认全部显示）
 -m               显示文件修改时间
 ```
 
 ## 断点续传与完整性
 
-- **分片下载**：对 ≥5MB 的对象按分片（默认 20MB）并行 Range 下载，**默认开启断点续传**——中断后重跑会从上次进度继续，checkpoint 文件存于下载目录 `.aos/checkpoints/`（成功完成后 SDK 自动清理；`-no-checkpoint` 关闭）
+- **分片下载**：对 ≥5MB 的对象按分片（默认 20MB）并行 Range 下载，**默认开启断点续传**——中断后重跑会从上次进度继续，checkpoint 文件存于下载目录 `.aos/checkpoints/`（成功完成后 SDK 自动清理；`--no-checkpoint` 关闭）
 - **完整性校验**：SDK 客户端默认开启 CRC64 校验，每个分片下载完成、整文件落盘前自动校验，与云端内容指纹不一致会报错（类似 tosutil 的 `-vchecksum`，无需额外参数）
 - **CRC 失败自愈**：若断点续传的本地状态损坏（如磁盘故障）导致 CRC64 校验失败，会自动清理残留的 checkpoint/临时文件并无 checkpoint 全量重下一次，避免反复复用损坏状态
 - **失败重试**：所有网络请求自动指数退避重试 2 次（100ms/200ms），公网/内网偶发抖动可自动恢复
@@ -169,7 +169,8 @@ go test ./...              # 单元测试（不访问 TOS）
 go build -o aos ./cmd/aos  # 编译
 make linux                 # 交叉编译 linux/amd64 与 linux/arm64
 make docs                  # 用 mkdocs-material 构建 GitHub Pages 站点到 _site/
+make serve                 # 本地预览文档（先同步根 README/CHANGELOG 再启动 mkdocs serve）
 make build / test / ping
 ```
 
-说明文档发布在 [seqyuan.github.io/aos](https://seqyuan.github.io/aos/)（仓库需为 Public，或账号具备 GitHub Pages）。站点由 [mkdocs-material](https://squidfunk.github.io/mkdocs-material/) 构建（`mkdocs.yml` + `docs/` 目录，`docs/index.md` 为指向根 README 的软链，改文档只改根文件即可）。本地预览：`python3 -m mkdocs serve`。每次 push `main` 还会把 `_site` 作为 `docs-site` artifact 挂在 [Actions](https://github.com/seqyuan/aos/actions) 上。打 `v*` 标签会触发 Release，附带 Linux 二进制。
+说明文档发布在 [seqyuan.github.io/aos](https://seqyuan.github.io/aos/)（仓库需为 Public，或账号具备 GitHub Pages）。站点由 [mkdocs-material](https://squidfunk.github.io/mkdocs-material/) 构建（`mkdocs.yml` + `docs/` 目录）。`docs/index.md`、`docs/changelog.md` 是 `make docs`/`make serve` 时从根 README/CHANGELOG 复制生成的临时页（已 .gitignore，不入库；避免软链在 Windows/CI 下失效），改文档只改根文件即可。本地预览：`make serve`。每次 push `main` 还会把 `_site` 作为 `docs-site` artifact 挂在 [Actions](https://github.com/seqyuan/aos/actions) 上。打 `v*` 标签会触发 Release，附带 Linux 二进制。

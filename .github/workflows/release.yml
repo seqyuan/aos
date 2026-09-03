@@ -24,7 +24,7 @@ jobs:
           CGO_ENABLED: "0"
         run: |
           mkdir -p dist
-          ver="${GITHUB_REF_NAME:-v0.3.0}"
+          ver="${GITHUB_REF_NAME}"
           for arch in amd64 arm64; do
             GOOS=linux GOARCH="$arch" go build -trimpath \
               -ldflags="-s -w -X main.version=${ver}" \

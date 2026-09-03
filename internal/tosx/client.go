@@ -1,4 +1,10 @@
 // Package tosx 封装火山云 TOS SDK，提供 aos 需要的客户端与便捷方法。
+//
+// 后端接入说明：当前绑定火山云 TOS SDK。未来接入 S3 等其他对象存储时，
+// 在本层抽取后端接口即可，命令行与配置层无需改动。接入自建 S3 兼容存储
+// （如 obs/minio/ceph）时务必开启 path-style 访问（AWS SDK 的 S3ForcePathStyle），
+// 即用 endpoint/bucket/key 形式而非 bucket.endpoint 的 virtual-hosted style，
+// 否则自建存储会解析失败（404）。火山云 TOS SDK 默认即 path-style，无需显式设置。
 package tosx
 
 import (
@@ -14,6 +20,8 @@ import (
 
 // NewClient 根据配置创建 TOS 客户端。
 // 开启 SDK 指数退避重试（最多重试 2 次，100ms/200ms），应对网络抖动与偶发失败。
+// 火山云 TOS 使用 path-style 访问（endpoint/bucket/key），SDK 默认如此、无需显式配置；
+// 若未来换用 AWS S3 SDK 接入自建 S3 兼容存储，需显式设置 S3ForcePathStyle=true。
 func NewClient(cfg config.Config) (*tos.ClientV2, error) {
 	client, err := tos.NewClientV2(cfg.EndpointOrDefault(),
 		tos.WithRegion(cfg.Region),

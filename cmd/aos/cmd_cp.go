@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,6 +10,7 @@ import (
 
 	"github.com/seqyuan/aos/internal/db"
 	"github.com/seqyuan/aos/internal/tosx"
+	"github.com/spf13/pflag"
 )
 
 // cmdCP aos cp：上传/下载统一命令，方向由位置参数决定：
@@ -21,25 +21,25 @@ import (
 //
 // 云上路径必须带 tos://（bucket 可省略为 tos:///前缀，用配置默认桶）。
 func cmdCP(args []string) int {
-	fs := flag.NewFlagSet("aos cp", flag.ContinueOnError)
+	fs := pflag.NewFlagSet("aos cp", pflag.ContinueOnError)
 	var b baseFlags
 	b.register(fs)
 	// 通用
-	job := fs.Int("j", 0, "文件级并发（默认按 CPU 核数）")
-	partTask := fs.Int("p", 0, "单文件分片并发（默认 4）")
-	partSize := fs.String("ps", "", "分片大小（大文件，默认 20MB，支持 5MB~5GB，如 20MB）")
-	quiet := fs.Bool("q", false, "安静模式")
+	job := fs.IntP("job", "j", 0, "文件级并发（默认按 CPU 核数）")
+	partTask := fs.IntP("part-task", "p", 0, "单文件分片并发（默认 4）")
+	partSize := fs.String("part-size", "", "分片大小（大文件，默认 20MB，支持 5MB~5GB，如 20MB）")
+	quiet := fs.BoolP("quiet", "q", false, "安静模式")
 	dbPath := fs.String("db", "", "sqlite 数据库路径（默认 ~/.config/aos.db）")
 	timeout := fs.Duration("timeout", 12*time.Hour, "传输总超时（默认 12h，如 30m、2h）")
 	// 上传
-	exclude := fs.String("e", "", "排除规则，逗号分隔，支持通配符，如 *.tmp,.git")
+	exclude := fs.StringP("exclude", "e", "", "排除规则，逗号分隔，支持通配符，如 *.tmp,.git")
 	followLinks := fs.Bool("follow-links", false, "软链接溯源上传链接目标的真实内容（这些文件不记录任务数据库）")
 	checkpoint := fs.Bool("checkpoint", false, "大文件分片上传断点续传（checkpoint 存于上传根目录 .aos/checkpoints/）")
 	noRecord := fs.Bool("no-record", false, "本次传输不写入任务记录数据库（上传/下载均可用）")
 	// 下载
-	force := fs.Bool("f", false, "忽略下载清单，全部重下")
+	force := fs.BoolP("force", "f", false, "忽略下载清单，全部重下")
 	noCheckpoint := fs.Bool("no-checkpoint", false, "关闭大文件分片下载断点续传（默认开启）")
-	usage := "用法: aos cp <源> [<目标>] [选项]\n\n上传（本地在前）:\n  aos cp ./dataset tos://example-bucket/ACME2026001/PM-ACME2026001-01/dataset\n  aos cp ./dataset tos:///ACME2026001/PM-ACME2026001-01/dataset   # bucket 用配置默认\n  aos cp dataset.zip tos://example-bucket/ACME2026001/PM-ACME2026001-01/dataset.zip\n\n下载（tos 在前）:\n  aos cp tos://example-bucket/ACME2026001/PM-ACME2026001-01/dataset /local\n  aos cp tos://example-bucket/ACME2026001/PM-ACME2026001-01/dataset   # 单参数：下载到当前目录\n\n单参数本地路径（还原上次上传的数据）:\n  aos cp /data/project1/dataset      # 按上传时记录的路径还原下载回该路径（未上传过会提示）\n\n说明:\n  - 上传目标前缀直接铺入：文件 key = 目标前缀 + 本地相对路径\n  - 目录默认递归；-e 排除、-follow-links 溯源软链接、-checkpoint 大文件断点续传\n  - 下载按 object key + ETag 清单（.aos/manifest.db）跳过已完成；-f 强制重下\n  - 大文件（≥5MB）分片传输，-ps 分片大小、-p 单文件分片并发、-j 文件级并发\n  - 上传/下载任务均记录到 sqlite（aos stat 查看历史）；-no-record 可关闭\n  - -timeout 设置传输总超时（默认 12h）；-e 排除规则若以 - 开头请用 -e=规则 形式"
+	usage := "用法: aos cp <源> [<目标>] [选项]\n\n上传（本地在前）:\n  aos cp ./dataset tos://example-bucket/ACME2026001/PM-ACME2026001-01/dataset\n  aos cp ./dataset tos:///ACME2026001/PM-ACME2026001-01/dataset   # bucket 用配置默认\n  aos cp dataset.zip tos://example-bucket/ACME2026001/PM-ACME2026001-01/dataset.zip\n\n下载（tos 在前）:\n  aos cp tos://example-bucket/ACME2026001/PM-ACME2026001-01/dataset /local\n  aos cp tos://example-bucket/ACME2026001/PM-ACME2026001-01/dataset   # 单参数：下载到当前目录\n\n单参数本地路径（还原上次上传的数据）:\n  aos cp /data/project1/dataset      # 按上传时记录的路径还原下载回该路径（未上传过会提示）\n\n说明:\n  - 上传目标前缀直接铺入：文件 key = 目标前缀 + 本地相对路径\n  - 目录默认递归；--exclude 排除、--follow-links 溯源软链接、--checkpoint 大文件断点续传\n  - 下载按 object key + ETag 清单（.aos/manifest.db）跳过已完成；-f 强制重下\n  - 大文件（≥5MB）分片传输，--part-size 分片大小、-p 单文件分片并发、-j 文件级并发\n  - 上传/下载任务均记录到 sqlite（aos stat 查看历史）；--no-record 可关闭\n  - --timeout 设置传输总超时（默认 12h）；--exclude 排除规则若以 - 开头请用 --exclude=规则 形式"
 	if ok, err := parseFlagSet(fs, args, usage); !ok {
 		return 2
 	} else if err != nil {

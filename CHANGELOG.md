@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.4.1 — 2026-09-03
+
+- **破坏性变更**：命令行 flag 迁移到 pflag，多字符选项由单横线改为双横线（`-ps`→`--part-size`、`-db`→`--db`、`-id`→`--id`、`-ak`/`-sk`→`--ak`/`--sk`、`-limit`→`--limit`、`-max-depth`→`--max-depth`、`-no-record`→`--no-record`、`-follow-links`→`--follow-links`、`-checkpoint`→`--checkpoint`、`-no-checkpoint`→`--no-checkpoint`、`-timeout`→`--timeout`、`-config`→`--config`、`-endpoint`→`--endpoint`、`-region`→`--region`、`-bucket`→`--bucket`）；单字符保留 shorthand（`-j -p -q -f -e -m -a`）并新增长名（`--job --part-task --quiet --force --exclude --mod --all`）
+- **改进**：flag 与位置参数混排、负数参数、防吞值改由 pflag 原生支持，删除约 50 行手工 reorderArgs 逻辑
+- **改进**：版本号单一来源改为 git tag（`main.go` 默认 `dev`，Makefile 用 `git describe --tags` 动态获取），发版只打 tag 不再改文件内版本号
+- **修复**：溯源链接文件在任务失败后被静默丢弃，现计入「跳过」并在总结中提示
+- **修复**：pflag 在 ContinueOnError 下不自动打印解析错误，显式打印避免非法参数静默失败
+- **文档**：文档页（docs/index.md、docs/changelog.md）改为构建时从根 README/CHANGELOG 复制，消除软链在 Windows/CI 下的跨平台脆弱性
+- **依赖**：`go` 指令去掉 patch 强制（`go 1.26.5`→`go 1.26`）；新增 `github.com/spf13/pflag v1.0.10`
+
 ## v0.3.1 — 2026-09-03
 
 - 修复：下载跳过已完成文件不再逐条打印（避免大目录二次下载刷屏），改为聚合汇总；`-q` 安静模式下不输出该汇总
