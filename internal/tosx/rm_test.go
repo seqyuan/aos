@@ -3,7 +3,6 @@ package tosx
 import (
 	"bytes"
 	"context"
-	"errors"
 	"strings"
 	"testing"
 
@@ -60,19 +59,6 @@ func TestRMDeleteSingleObject(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "已删除 1 个对象") {
 		t.Fatalf("报告缺失: %q", buf.String())
-	}
-}
-
-func TestRMDeleteSingleObjectNotFoundIsIdempotent(t *testing.T) {
-	ops, st := fakeOps()
-	st.deleteOneErr = errors.New("tos: NoSuchKey: not found")
-	var buf bytes.Buffer
-	res, err := rmExecute(context.Background(), ops, "b", "k.txt/", RMOptions{}, &buf)
-	if err != nil {
-		t.Fatalf("对象不存在应视为删除成功: %v", err)
-	}
-	if res.DeletedObjects != 1 {
-		t.Fatalf("res=%+v", res)
 	}
 }
 

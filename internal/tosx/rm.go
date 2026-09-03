@@ -110,9 +110,8 @@ func rmExecute(ctx context.Context, ops rmOps, bucket, prefix string, opt RMOpti
 			return RMResult{}, fmt.Errorf("请输入要删除的对象 key（如 tos://bucket/dir/file.txt；或加 -r 递归删除前缀下所有对象）")
 		}
 		if err := ops.deleteOne(ctx, bucket, key); err != nil {
-			if !isNotFoundError(err) { // 对象不存在视为删除成功（幂等）
-				return RMResult{}, FriendlyError(err)
-			}
+			// DeleteObject 幂等：对象不存在也返回 204 成功，无需特判 NotFound。
+			return RMResult{}, FriendlyError(err)
 		}
 		if !opt.Quiet {
 			fmt.Fprintf(w, "已删除 1 个对象 ✅\n")
@@ -143,8 +142,15 @@ func rmExecute(ctx context.Context, ops rmOps, bucket, prefix string, opt RMOpti
 		if confirm == nil {
 			confirm = defaultConfirm
 		}
-		prompt := fmt.Sprintf("将删除 %d 个对象、清理 %d 个未完成分片上传任务。确认? (y/N) ",
-			len(files), len(uploads))
+		var prompt string
+		switch {
+		case len(files) > 0 && len(uploads) > 0:
+			prompt = fmt.Sprintf("将删除 %d 个对象、清理 %d 个未完成分片上传任务。确认? (y/N) ", len(files), len(uploads))
+		case len(files) > 0:
+			prompt = fmt.Sprintf("将删除 %d 个对象。确认? (y/N) ", len(files))
+		default:
+			prompt = fmt.Sprintf("将清理 %d 个未完成分片上传任务。确认? (y/N) ", len(uploads))
+		}
 		ok, err := confirm(prompt)
 		if err != nil {
 			return RMResult{}, err
@@ -253,13 +259,4 @@ func isTerminal(f *os.File) bool {
 		return false
 	}
 	return st.Mode()&os.ModeCharDevice != 0
-}
-
-// isNotFoundError 判断是否为对象/资源不存在错误（删除幂等用）。
-func isNotFoundError(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "notfound") || strings.Contains(msg, "not found") || strings.Contains(msg, "no such")
 }
