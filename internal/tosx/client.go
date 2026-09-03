@@ -91,6 +91,15 @@ func UploadOne(ctx context.Context, client *tos.ClientV2, bucket, key, localPath
 	return FriendlyError(err)
 }
 
+// UploadText 上传一段文本内容作为对象（用于默认模式下软链接转同名文本文件）。
+func UploadText(ctx context.Context, client *tos.ClientV2, bucket, key, content string) error {
+	_, err := client.PutObjectV2(ctx, &tos.PutObjectV2Input{
+		PutObjectBasicInput: tos.PutObjectBasicInput{Bucket: bucket, Key: key},
+		Content:             strings.NewReader(content),
+	})
+	return FriendlyError(err)
+}
+
 // DownloadOne 下载单个对象到本地文件。
 // size 为远端对象大小，用于选择单次 GET 还是分片下载（不依赖本地 dest 是否存在）。
 // partSize 为分片大小（0 用默认 20MB），taskNum 为分片并发（0 用默认 4）。

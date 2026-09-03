@@ -270,3 +270,84 @@ func TestFindTaskByLocalPathIgnoresDownloads(t *testing.T) {
 		t.Fatalf("应匹配 up 任务，实际 direction=%q", got.Direction)
 	}
 }
+
+// 软链接记录：AddLinks 写入后 GetTaskLinks 能按任务 ID 回读。
+func TestAddAndGetTaskLinks(t *testing.T) {
+	dir := t.TempDir()
+	database, err := Open(filepath.Join(dir, "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	id, err := database.CreateTask(Task{LocalPath: "/data/x", RemotePrefix: "P/x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	links := []Link{
+		{Rel: "sub/a.bam", Target: "/share/a.bam", ObjectKey: "P/x/sub/a.bam", Size: 13},
+		{Rel: "b.txt", Target: "/share/b.txt", ObjectKey: "P/x/b.txt", Size: 12},
+	}
+	if err := database.AddLinks(id, links); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := database.GetTaskLinks(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("GetTaskLinks = %d 条, want 2", len(got))
+	}
+	if got[0].Rel != "sub/a.bam" || got[0].Target != "/share/a.bam" || got[0].ObjectKey != "P/x/sub/a.bam" {
+		t.Fatalf("第一条记录异常: %+v", got[0])
+	}
+	if got[1].Rel != "b.txt" {
+		t.Fatalf("第二条记录异常: %+v", got[1])
+	}
+
+	// 其它任务不应读到这些链接
+	empty, err := database.GetTaskLinks(id + 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(empty) != 0 {
+		t.Fatalf("其它任务应读到 0 条，实际 %d", len(empty))
+	}
+}
+
+// FindTaskByRemotePrefix 按远端前缀匹配最近的 up 任务（用于普通下载后还原软链接）。
+func TestFindTaskByRemotePrefix(t *testing.T) {
+	dir := t.TempDir()
+	database, err := Open(filepath.Join(dir, "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	if _, err := database.CreateTask(Task{Direction: "up", LocalPath: "/data/x", RemotePrefix: "tos://b/P/x"}); err != nil {
+		t.Fatal(err)
+	}
+	// 同前缀的 down 任务不应被匹配
+	if _, err := database.CreateTask(Task{Direction: "down", LocalPath: "/data/y", RemotePrefix: "tos://b/P/x"}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, ok, err := database.FindTaskByRemotePrefix("tos://b/P/x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("应匹配到 up 任务")
+	}
+	if got.Direction != "up" || got.LocalPath != "/data/x" {
+		t.Fatalf("应匹配 up 任务 /data/x，实际 %+v", got)
+	}
+
+	// 无匹配前缀
+	if _, ok, err := database.FindTaskByRemotePrefix("tos://b/other"); err != nil {
+		t.Fatal(err)
+	} else if ok {
+		t.Fatal("不应匹配到任务")
+	}
+}

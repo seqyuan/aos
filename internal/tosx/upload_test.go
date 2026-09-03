@@ -2,14 +2,9 @@ package tosx
 
 import (
 	"bytes"
-	"context"
-	"io"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/seqyuan/aos/internal/config"
 )
 
 func TestNormalizeKey(t *testing.T) {
@@ -30,22 +25,6 @@ func TestNormalizeKey(t *testing.T) {
 		if got := normalizeKey(c.in); got != c.want {
 			t.Errorf("normalizeKey(%q) = %q, want %q", c.in, got, c.want)
 		}
-	}
-}
-
-func TestUploadRejectsTopLevelSymlink(t *testing.T) {
-	dir := t.TempDir()
-	link := filepath.Join(dir, "link")
-	if err := os.Symlink(dir, link); err != nil {
-		t.Skipf("无法创建软链接: %v", err)
-	}
-	// 错误发生在使用 client 之前，传 nil 即可
-	err := Upload(context.Background(), nil, config.Config{}, UploadOptions{
-		TargetPrefix: "C/SPI/x",
-		LocalPath:    link,
-	}, io.Discard)
-	if err == nil || !strings.Contains(err.Error(), "软链接") {
-		t.Fatalf("应拒绝把顶层软链接作为 -d 上传: %v", err)
 	}
 }
 
@@ -141,7 +120,7 @@ func TestCollectCountsTmpSkipped(t *testing.T) {
 	}
 }
 
-func TestCollectDefaultSkipsSymlinks(t *testing.T) {
+func TestCollectDefaultConvertsSymlinksToText(t *testing.T) {
 	dir := t.TempDir()
 	if err := writeTestFile(dir+"/real.txt", "hello"); err != nil {
 		t.Fatal(err)
@@ -149,19 +128,61 @@ func TestCollectDefaultSkipsSymlinks(t *testing.T) {
 	if err := makeSymlink(filepath.Join(dir, "real.txt"), filepath.Join(dir, "link.txt")); err != nil {
 		t.Skipf("无法创建软链接: %v", err)
 	}
+	// 断链：readlink 能成功但目标不存在，默认模式仍转文本上传
+	if err := makeSymlink(filepath.Join(dir, "missing.txt"), filepath.Join(dir, "broken")); err != nil {
+		t.Skipf("无法创建软链接: %v", err)
+	}
 	var buf bytes.Buffer
 	collected, err := collectUploadJobs(dir, "C/SPI/x", UploadOptions{}, &buf)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if collected.skippedLinks != 1 {
-		t.Fatalf("skippedLinks = %d, want 1", collected.skippedLinks)
+	if collected.linkCount != 2 {
+		t.Fatalf("linkCount = %d, want 2", collected.linkCount)
 	}
-	if len(collected.jobs) != 1 || collected.jobs[0].local != filepath.Join(dir, "real.txt") {
+	if len(collected.jobs) != 3 { // real.txt + link.txt（转文本） + broken（转文本）
 		t.Fatalf("jobs = %+v", collected.jobs)
 	}
-	if collected.jobs[0].followLink {
+	var linkJob, brokenJob *uploadJob
+	for i := range collected.jobs {
+		switch collected.jobs[i].key {
+		case "C/SPI/x/link.txt":
+			linkJob = &collected.jobs[i]
+		case "C/SPI/x/broken":
+			brokenJob = &collected.jobs[i]
+		}
+	}
+	if linkJob == nil || linkJob.linkTarget != filepath.Join(dir, "real.txt") {
+		t.Fatalf("link.txt 应转为文本上传，内容为链接目标: %+v", linkJob)
+	}
+	if linkJob.followLink {
 		t.Fatal("默认模式不应有溯源 job")
+	}
+	if brokenJob == nil || brokenJob.linkTarget != filepath.Join(dir, "missing.txt") {
+		t.Fatalf("断链也应转文本上传: %+v", brokenJob)
+	}
+}
+
+func TestCollectTopLevelSymlinkDefault(t *testing.T) {
+	dir := t.TempDir()
+	if err := writeTestFile(filepath.Join(dir, "real.txt"), "x"); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "top")
+	if err := makeSymlink(filepath.Join(dir, "real.txt"), link); err != nil {
+		t.Skipf("无法创建软链接: %v", err)
+	}
+	var buf bytes.Buffer
+	collected, err := collectUploadJobs(link, "C/SPI/x", UploadOptions{}, &buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if collected.linkCount != 1 || len(collected.jobs) != 1 {
+		t.Fatalf("jobs = %+v", collected.jobs)
+	}
+	j := collected.jobs[0]
+	if j.linkTarget != filepath.Join(dir, "real.txt") || j.key != "C/SPI/x" {
+		t.Fatalf("顶层链接应转文本上传: %+v", j)
 	}
 }
 
@@ -197,8 +218,8 @@ func TestCollectFollowLinksFileSymlink(t *testing.T) {
 	if linkJob.local != filepath.Join(dir, "target", "real.bam") {
 		t.Fatalf("local = %q, want 链接目标的真实路径", linkJob.local)
 	}
-	if collected.skippedLinks != 0 || collected.brokenLinks != 0 {
-		t.Fatalf("skipped=%d broken=%d", collected.skippedLinks, collected.brokenLinks)
+	if collected.linkCount != 0 || collected.brokenLinks != 0 {
+		t.Fatalf("linkCount=%d broken=%d", collected.linkCount, collected.brokenLinks)
 	}
 }
 

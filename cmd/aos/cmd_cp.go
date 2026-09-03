@@ -56,6 +56,9 @@ func cmdCP(args []string) int {
 	// ---- 方向判定 ----
 	var src string
 	upload, lookupDB := false, false
+	// 还原模式（单参数本地路径）：保存查到的 up 任务与其数据库连接，下载完成后按记录还原软链接
+	var restoreDB *db.DB
+	var restoreTask db.Task
 	switch {
 	case len(pos) == 2:
 		src = pos[0]
@@ -174,24 +177,24 @@ func cmdCP(args []string) int {
 		}
 		// 单参数 tos:// 路径：localDir 为空，Download 落盘到当前目录
 	default: // 单参数本地路径：按上传记录还原
-		database, err := openDB(*dbPath)
+		restoreDB, err = openDB(*dbPath)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "aos cp: %v\n", err)
 			return 1
 		}
-		defer database.Close()
-		t, err := database.FindTaskByLocalPath(src)
+		defer restoreDB.Close()
+		restoreTask, err = restoreDB.FindTaskByLocalPath(src)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "aos cp: %v\n", err)
 			fmt.Fprintln(os.Stderr, "aos cp: 若想上传请提供目标云上路径，如: aos cp <本地路径> tos://<bucket>/<前缀>")
 			return 1
 		}
-		if t.RemotePrefix == "" {
-			fmt.Fprintf(os.Stderr, "aos cp: 任务 %d 没有记录远端路径\n", t.ID)
+		if restoreTask.RemotePrefix == "" {
+			fmt.Fprintf(os.Stderr, "aos cp: 任务 %d 没有记录远端路径\n", restoreTask.ID)
 			return 1
 		}
-		fmt.Fprintf(os.Stderr, "找到上传任务 %d（状态 %s）: %s\n", t.ID, t.Status, t.RemotePrefix)
-		tosPath = t.RemotePrefix
+		fmt.Fprintf(os.Stderr, "找到上传任务 %d（状态 %s）: %s\n", restoreTask.ID, restoreTask.Status, restoreTask.RemotePrefix)
+		tosPath = restoreTask.RemotePrefix
 		localDir = src
 		localFile = src // 单文件任务时精确落盘回上传时的文件路径
 	}
@@ -223,7 +226,41 @@ func cmdCP(args []string) int {
 		fmt.Fprintf(os.Stderr, "aos cp: %v\n", err)
 		return 1
 	}
+	// 下载完成后还原软链接：
+	// 1) 单参数本地路径还原：直接用已查到的 up 任务；
+	// 2) 普通下载：按远端前缀匹配最近的 up 任务。
+	if err := restoreLinksAfterDownload(*dbPath, restoreDB, restoreTask, lookupDB, tosPath, localDir, cfg.Bucket); err != nil {
+		fmt.Fprintf(os.Stderr, "aos cp: 还原软链接失败: %v\n", err)
+		return 1
+	}
 	return 0
+}
+
+// restoreLinksAfterDownload 下载完成后按上传记录的软链接明细还原 symlink。
+// lookupDB：直接用已查到的 up 任务；普通下载：按远端前缀匹配最近的 up 任务。
+func restoreLinksAfterDownload(dbPath string, restoreDB *db.DB, restoreTask db.Task, lookupDB bool, tosPath, localDir, defaultBucket string) error {
+	if lookupDB {
+		if restoreDB == nil {
+			return nil
+		}
+		return restoreSymlinks(restoreDB, restoreTask.ID, localDir)
+	}
+	// 普通下载：解析远端前缀（tos://bucket/prefix），匹配最近的 up 任务
+	tp, err := tosx.ParseTOSPath(tosPath, defaultBucket)
+	if err != nil {
+		return nil // 无法解析远端路径，跳过还原
+	}
+	remotePrefix := "tos://" + tp.Bucket + "/" + strings.TrimSuffix(tp.Prefix, "/")
+	database, err := openDB(dbPath)
+	if err != nil {
+		return nil // 无法打开数据库，跳过还原
+	}
+	defer database.Close()
+	upTask, ok, err := database.FindTaskByRemotePrefix(remotePrefix)
+	if err != nil || !ok {
+		return nil // 无匹配 up 任务，跳过还原
+	}
+	return restoreSymlinks(database, upTask.ID, localDir)
 }
 
 func resolveDBPath(flagPath string) string {
@@ -271,6 +308,14 @@ func (u *uploadRecorder) close() {
 
 func (u *uploadRecorder) OnTaskBegin(remotePrefix string, totalFiles int, totalBytes int64) (int64, error) {
 	return u.rec.Begin(remotePrefix, int64(totalFiles), totalBytes)
+}
+
+func (u *uploadRecorder) OnLinks(taskID int64, links []tosx.UploadLink) error {
+	dl := make([]db.Link, 0, len(links))
+	for _, l := range links {
+		dl = append(dl, db.Link{Rel: l.Rel, Target: l.Target, ObjectKey: l.ObjectKey, Size: l.Size})
+	}
+	return u.database.AddLinks(taskID, dl)
 }
 
 func (u *uploadRecorder) OnProgress(taskID int64, doneFiles, doneBytes, failedFiles int64) error {
@@ -327,4 +372,37 @@ func (d *downloadRecorder) OnProgress(taskID int64, doneFiles, doneBytes, failed
 
 func (d *downloadRecorder) OnFinish(taskID int64, status, errMsg string) error {
 	return d.rec.Finish(status, errMsg)
+}
+
+// restoreSymlinks 下载完成后，按上传时记录的软链接明细把文本文件还原为 symlink。
+// localDir 为还原落盘根目录（空则视为当前目录）；顶层链接（Rel 为空）直接在该路径上建链接。
+func restoreSymlinks(database *db.DB, taskID int64, localDir string) error {
+	if localDir == "" {
+		localDir = "."
+	}
+	links, err := database.GetTaskLinks(taskID)
+	if err != nil {
+		return err
+	}
+	if len(links) == 0 {
+		return nil
+	}
+	for _, l := range links {
+		target := localDir
+		if l.Rel != "" {
+			target = filepath.Join(localDir, filepath.FromSlash(l.Rel))
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return fmt.Errorf("创建目录失败: %w", err)
+		}
+		// 移除已下载的文本文件（或上次还原残留的旧链接），再重建 symlink
+		if err := os.Remove(target); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("移除文本文件 %s: %w", target, err)
+		}
+		if err := os.Symlink(l.Target, target); err != nil {
+			return fmt.Errorf("还原软链接 %s -> %s: %w", target, l.Target, err)
+		}
+	}
+	fmt.Printf("还原 %d 个软链接（内容为链接目标地址）\n", len(links))
+	return nil
 }

@@ -37,6 +37,16 @@ type Task struct {
 	UpdatedAt    time.Time
 }
 
+// Link 一条软链接记录（默认模式上传时，软链接转为同名文本文件并记入 task_links）。
+type Link struct {
+	ID        int64
+	TaskID    int64
+	Rel       string // 链接相对上传根目录的路径（顶层链接为 ""）
+	Target    string // readlink 原值（链接指向的地址）
+	ObjectKey string // 上传后的对象 key
+	Size      int64  // 文本文件字节数
+}
+
 const schema = `
 CREATE TABLE IF NOT EXISTS tasks (
 	id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -56,6 +66,16 @@ CREATE TABLE IF NOT EXISTS tasks (
 	finished_at   INTEGER,
 	updated_at    INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS task_links (
+	id          INTEGER PRIMARY KEY AUTOINCREMENT,
+	task_id     INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+	link_rel    TEXT NOT NULL,
+	link_target TEXT NOT NULL,
+	object_key  TEXT NOT NULL,
+	size        INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_links_task ON task_links(task_id);
 `
 
 // DefaultPath 返回默认任务库路径：$AOS_DB，否则 $XDG_CONFIG_HOME/aos.db，再否则 ~/.config/aos.db。
@@ -158,6 +178,36 @@ func (d *DB) FinishTask(taskID int64, status, errMsg string) error {
 	return err
 }
 
+// AddLinks 写入一批软链接记录（默认模式上传时调用）。
+func (d *DB) AddLinks(taskID int64, links []Link) error {
+	for _, l := range links {
+		if _, err := d.Exec(`INSERT INTO task_links (task_id, link_rel, link_target, object_key, size)
+			VALUES (?,?,?,?,?)`, taskID, l.Rel, l.Target, l.ObjectKey, l.Size); err != nil {
+			return fmt.Errorf("写入软链接记录失败: %w", err)
+		}
+	}
+	return nil
+}
+
+// GetTaskLinks 按任务 ID 查询其软链接记录（按 id 升序）。
+func (d *DB) GetTaskLinks(taskID int64) ([]Link, error) {
+	rows, err := d.Query(`SELECT id, task_id, link_rel, link_target, object_key, size
+		FROM task_links WHERE task_id=? ORDER BY id`, taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Link
+	for rows.Next() {
+		var l Link
+		if err := rows.Scan(&l.ID, &l.TaskID, &l.Rel, &l.Target, &l.ObjectKey, &l.Size); err != nil {
+			return nil, err
+		}
+		out = append(out, l)
+	}
+	return out, rows.Err()
+}
+
 // ListTasks 列出任务（按 ID 倒序，最多 limit 条）。
 // recentOnly 为 true 时只返回：状态为 break（中断/失败）或 started_at 在 recentWindow 内的任务，
 // 用于 aos stat 默认视图（避免旧的成功任务刷屏）。
@@ -241,6 +291,35 @@ func (d *DB) FindTaskByLocalPath(localPath string) (Task, error) {
 		}
 	}
 	return Task{}, fmt.Errorf("没有找到从路径 %q 上传过的任务（该路径需与 cp 上传时的本地路径一致，或用 aos stat 查看任务）", localPath)
+}
+
+// FindTaskByRemotePrefix 按远端前缀（tos://bucket/prefix）查找最近一次上传任务（仅匹配 up）。
+// 用于普通下载完成后按远端前缀匹配 up 任务，还原其软链接记录。
+func (d *DB) FindTaskByRemotePrefix(remotePrefix string) (Task, bool, error) {
+	rows, err := d.Query(`SELECT id, direction, spi, contract, local_path, remote_prefix, total_files, total_bytes,
+		done_files, done_bytes, failed_files, status, COALESCE(error,''),
+		started_at, COALESCE(finished_at,0), updated_at FROM tasks
+		WHERE remote_prefix=? AND direction='up' ORDER BY id DESC LIMIT 1`, remotePrefix)
+	if err != nil {
+		return Task{}, false, err
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		return Task{}, false, nil
+	}
+	var t Task
+	var start, finish, upd int64
+	if err := rows.Scan(&t.ID, &t.Direction, &t.SPI, &t.Contract, &t.LocalPath, &t.RemotePrefix,
+		&t.TotalFiles, &t.TotalBytes, &t.DoneFiles, &t.DoneBytes, &t.FailedFiles,
+		&t.Status, &t.Error, &start, &finish, &upd); err != nil {
+		return Task{}, false, err
+	}
+	t.StartedAt = time.Unix(start, 0)
+	if finish > 0 {
+		t.FinishedAt = time.Unix(finish, 0)
+	}
+	t.UpdatedAt = time.Unix(upd, 0)
+	return t, true, rows.Err()
 }
 
 func localPathCandidates(localPath string) []string {

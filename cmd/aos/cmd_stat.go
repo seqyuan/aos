@@ -160,6 +160,16 @@ func statDetail(database *db.DB, dbPath string, id int64) int {
 	if t.Error != "" {
 		fmt.Printf("  错误:       %s\n", t.Error)
 	}
+	if links, err := database.GetTaskLinks(id); err == nil && len(links) > 0 {
+		fmt.Printf("  软链接:     %d 个（还原下载时自动重建 symlink）\n", len(links))
+		for _, l := range links {
+			rel := l.Rel
+			if rel == "" {
+				rel = "(顶层)"
+			}
+			fmt.Printf("    %s -> %s\n", rel, l.Target)
+		}
+	}
 	fmt.Printf("  数据库: %s\n", dbPath)
 	return 0
 }

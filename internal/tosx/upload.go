@@ -31,17 +31,26 @@ type UploadOptions struct {
 	Recorder     UploadRecorder // 任务记录器（可为 nil）
 }
 
+// UploadLink 软链接记录（默认模式：软链接转为同名文本文件上传，内容为 readlink 原值）。
+type UploadLink struct {
+	Rel       string // 链接相对上传根目录的路径（顶层链接为 ""）
+	Target    string // readlink 原值（链接指向的地址）
+	ObjectKey string // 上传后的对象 key
+	Size      int64  // 文本文件字节数
+}
+
 // UploadRecorder 记录上传任务：调用方实现（例如写入 SQLite）。
 // 返回的 taskID 会在后续回调中原样传回。
 type UploadRecorder interface {
 	OnTaskBegin(remotePrefix string, totalFiles int, totalBytes int64) (taskID int64, err error)
+	OnLinks(taskID int64, links []UploadLink) error
 	OnProgress(taskID int64, doneFiles, doneBytes, failedFiles int64) error
 	OnFinish(taskID int64, status, errMsg string) error
 }
 
 // Upload 执行上传。
 func Upload(ctx context.Context, client *tos.ClientV2, cfg config.Config, opt UploadOptions, w io.Writer) error {
-	// 1. 解析本地路径（Lstat，不跟随软链接）
+	// 1. 解析本地路径（用 Lstat 识别软链接，不解析其目标）
 	localPath := filepath.Clean(opt.LocalPath)
 
 	// 2. 目标前缀：用户指定的 tos:// 前缀（已带尾斜杠），去掉尾斜杠作为 key 基准
@@ -52,7 +61,8 @@ func Upload(ctx context.Context, client *tos.ClientV2, cfg config.Config, opt Up
 	}
 
 	// 3. 收集待上传文件。
-	// 默认：软链接不跟随、不上传（避免误传链接指向的共享大文件或造成循环）。
+	// 默认：软链接不读取目标内容，转为同名文本文件上传（内容 = readlink 原值），
+	// 并把链接明细记录到任务数据库（便于下载后还原为 symlink）。
 	// -follow-links：软链接溯源上传真实内容（链接在项目中的相对路径作为 key），
 	// 且这些溯源文件不记录到任务数据库（不计入 total/done/failed 统计）。
 	collected, err := collectUploadJobs(localPath, basePrefix, opt, w)
@@ -66,37 +76,72 @@ func Upload(ctx context.Context, client *tos.ClientV2, cfg config.Config, opt Up
 		return nil
 	}
 
-	// 5. 统计总大小。任务统计只含普通文件；溯源链接文件不记录。
+	// 5. 统计总大小与分类。默认模式的软链接转文本文件计入 total/done/failed（会记库）；
+	// 溯源链接文件（-follow-links）不计入、不记库。
 	var totalBytes int64
-	regularCount, followCount := 0, 0
+	totalFiles, linkCount, followCount := 0, 0, 0
 	for i := range jobs {
-		if st, err := os.Stat(jobs[i].local); err == nil {
-			jobs[i].size = st.Size()
-		}
-		if jobs[i].followLink {
+		j := &jobs[i]
+		switch {
+		case j.linkTarget != "":
+			j.size = int64(len(j.linkTarget))
+			linkCount++
+			totalFiles++
+			totalBytes += j.size
+		case j.followLink:
 			followCount++
-		} else {
-			totalBytes += jobs[i].size
-			regularCount++
+		default:
+			if st, err := os.Stat(j.local); err == nil {
+				j.size = st.Size()
+			}
+			totalFiles++
+			totalBytes += j.size
 		}
 	}
 
-	// 5.5 任务记录：开始（只记录普通文件，溯源链接文件不记录）
+	// 5.5 任务记录：开始 + 软链接明细（只记录默认模式的普通文件与转文本的软链接）
+	// 远端前缀记录完整 tos://bucket/前缀，便于下载侧按前缀匹配 up 任务还原软链接
+	remotePrefix := basePrefix
+	if cfg.Bucket != "" {
+		remotePrefix = "tos://" + cfg.Bucket + "/" + basePrefix
+	}
 	taskID := int64(0)
 	var recorder UploadRecorder = opt.Recorder
 	if recorder != nil {
-		id, err := recorder.OnTaskBegin(basePrefix, regularCount, totalBytes)
+		id, err := recorder.OnTaskBegin(remotePrefix, totalFiles, totalBytes)
 		if err != nil {
 			fmt.Fprintf(w, "⚠️ 任务记录失败（继续上传，不记录）: %v\n", err)
 			recorder = nil
 		} else {
 			taskID = id
+			if linkCount > 0 {
+				links := make([]UploadLink, 0, linkCount)
+				for _, j := range jobs {
+					if j.linkTarget == "" {
+						continue
+					}
+					rel := strings.TrimPrefix(j.key, basePrefix)
+					rel = strings.TrimPrefix(rel, "/")
+					links = append(links, UploadLink{
+						Rel:       rel,
+						Target:    j.linkTarget,
+						ObjectKey: j.key,
+						Size:      j.size,
+					})
+				}
+				if err := recorder.OnLinks(taskID, links); err != nil {
+					fmt.Fprintf(w, "⚠️ 软链接记录失败（继续上传）: %v\n", err)
+				}
+			}
 		}
 	}
 
 	// 6. 打印计划
 	fmt.Fprintf(w, "上传 %d 个文件（共 %s）到 tos://%s/%s\n",
-		regularCount, human.Size(totalBytes), cfg.Bucket, basePrefix)
+		totalFiles, human.Size(totalBytes), cfg.Bucket, basePrefix)
+	if linkCount > 0 {
+		fmt.Fprintf(w, "其中 %d 个软链接转为同名文本文件（内容为链接目标地址）\n", linkCount)
+	}
 	if followCount > 0 {
 		fmt.Fprintf(w, "另溯源上传 %d 个链接文件（内容为链接目标，不记录任务）\n", followCount)
 	}
@@ -120,7 +165,7 @@ func Upload(ctx context.Context, client *tos.ClientV2, cfg config.Config, opt Up
 			checkpointDir = "" // 无法创建目录时退化为不带 checkpoint
 		}
 	}
-	progress := ui.NewProgress(regularCount, totalBytes, opt.Quiet, w)
+	progress := ui.NewProgress(totalFiles, totalBytes, opt.Quiet, w)
 	progress.Start()
 
 	var wg sync.WaitGroup
@@ -188,7 +233,13 @@ func Upload(ctx context.Context, client *tos.ClientV2, cfg config.Config, opt Up
 					countSkip()
 					continue
 				}
-				err := UploadOne(ctx, client, cfg.Bucket, j.key, j.local, opt.Checkpoint, checkpointDir, opt.PartSize, opt.TaskNum)
+				var err error
+				if j.linkTarget != "" {
+					// 默认模式：软链接转为同名文本文件上传（内容为 readlink 原值）
+					err = UploadText(ctx, client, cfg.Bucket, j.key, j.linkTarget)
+				} else {
+					err = UploadOne(ctx, client, cfg.Bucket, j.key, j.local, opt.Checkpoint, checkpointDir, opt.PartSize, opt.TaskNum)
+				}
 				if err != nil {
 					reportErr(err)
 					progress.Fail(j.key, err)
@@ -249,22 +300,20 @@ type uploadJob struct {
 	local      string // 本地文件路径（溯源链接时为链接目标的真实路径）
 	key        string
 	size       int64
-	followLink bool // 溯源链接文件：内容为链接目标，不记录任务数据库
+	linkTarget string // 非空：默认模式软链接转文本文件，内容为 readlink 原值
+	followLink bool   // 溯源链接文件：内容为链接目标，不记录任务数据库
 }
 
 // collectedJobs 收集结果。
 type collectedJobs struct {
-	jobs         []uploadJob
-	skippedLinks int // 默认模式跳过的软链接数
-	brokenLinks  int // 断链/无效软链接数（-follow-links 时）
-	skippedTmp   int // 默认跳过的 *.tmp/*.checkpoint 文件数
+	jobs        []uploadJob
+	linkCount   int // 默认模式转为文本文件的软链接数
+	brokenLinks int // 断链/无效软链接数（-follow-links 时）
+	skippedTmp  int // 默认跳过的 *.tmp/*.checkpoint 文件数
 }
 
-// printLinkSkipSummary 打印软链接跳过/断链统计（收集完成或计划阶段均调用）。
+// printLinkSkipSummary 打印断链/临时文件跳过统计（收集完成或计划阶段均调用）。
 func printLinkSkipSummary(w io.Writer, c collectedJobs) {
-	if c.skippedLinks > 0 {
-		fmt.Fprintf(w, "跳过 %d 个软链接（未开启 -follow-links）\n", c.skippedLinks)
-	}
 	if c.brokenLinks > 0 {
 		fmt.Fprintf(w, "跳过 %d 个断链/无效软链接\n", c.brokenLinks)
 	}
@@ -274,8 +323,9 @@ func printLinkSkipSummary(w io.Writer, c collectedJobs) {
 }
 
 // collectUploadJobs 遍历本地路径收集上传任务。
-// FollowLinks 关闭时软链接直接跳过；开启时软链接溯源上传链接目标的真实内容
-// （key 仍用链接在项目中的相对路径），目录链接递归展开并按 realpath 防循环，断链跳过并提示。
+// FollowLinks 关闭时软链接转为同名文本文件上传（内容为 readlink 原值，记入任务库）；
+// 开启时软链接溯源上传链接目标的真实内容（key 仍用链接在项目中的相对路径），
+// 目录链接递归展开并按 realpath 防循环，断链跳过并提示。
 func collectUploadJobs(localPath, basePrefix string, opt UploadOptions, w io.Writer) (collectedJobs, error) {
 	// 归一为绝对路径：避免 -d 用相对路径时，EvalSymlinks/后续 os.Stat 依赖进程 cwd。
 	if abs, err := filepath.Abs(localPath); err == nil {
@@ -289,11 +339,18 @@ func collectUploadJobs(localPath, basePrefix string, opt UploadOptions, w io.Wri
 	switch {
 	case lstat.Mode()&os.ModeSymlink != 0:
 		if !opt.FollowLinks {
-			return collectedJobs{}, fmt.Errorf("不支持直接上传软链接 %s（可用 -follow-links 溯源上传链接指向的内容）", localPath)
-		}
-		// 顶层链接：溯源上传（目录链接展开到 basePrefix 下）
-		if err := c.addSymlinkTarget(localPath, "", basePrefix); err != nil {
-			return collectedJobs{}, err
+			// 默认模式：顶层软链接转为同名文本文件上传（内容 = readlink 原值）
+			target, err := os.Readlink(localPath)
+			if err != nil {
+				return collectedJobs{}, fmt.Errorf("读取软链接 %s 失败: %w", localPath, err)
+			}
+			c.linkCount++
+			c.jobs = append(c.jobs, uploadJob{local: localPath, key: normalizeKey(basePrefix), linkTarget: target})
+		} else {
+			// 顶层链接：溯源上传（目录链接展开到 basePrefix 下）
+			if err := c.addSymlinkTarget(localPath, "", basePrefix); err != nil {
+				return collectedJobs{}, err
+			}
 		}
 	case !lstat.IsDir():
 		c.jobs = append(c.jobs, uploadJob{local: localPath, key: normalizeKey(basePrefix)})
@@ -302,18 +359,18 @@ func collectUploadJobs(localPath, basePrefix string, opt UploadOptions, w io.Wri
 			return collectedJobs{}, fmt.Errorf("遍历本地目录 %s 失败: %w", localPath, err)
 		}
 	}
-	return collectedJobs{jobs: c.jobs, skippedLinks: c.skippedLinks, brokenLinks: c.brokenLinks, skippedTmp: c.skippedTmp}, nil
+	return collectedJobs{jobs: c.jobs, linkCount: c.linkCount, brokenLinks: c.brokenLinks, skippedTmp: c.skippedTmp}, nil
 }
 
 // collector 收集上传任务；visited 记录已展开的目录 realpath 用于防循环。
 type collector struct {
-	opt          UploadOptions
-	w            io.Writer
-	jobs         []uploadJob
-	visited      map[string]bool
-	skippedLinks int
-	brokenLinks  int
-	skippedTmp   int
+	opt         UploadOptions
+	w           io.Writer
+	jobs        []uploadJob
+	visited     map[string]bool
+	linkCount   int // 默认模式转为文本文件的软链接数
+	brokenLinks int // 断链/无效软链接数（-follow-links 时）
+	skippedTmp  int
 }
 
 // walkDir 递归遍历目录 dir，把其下文件映射到 keyPrefix 前缀下。
@@ -353,7 +410,13 @@ func (c *collector) walkDir(root, dir, keyPrefix string, follow bool) error {
 		}
 		if isSymlink(path) {
 			if !c.opt.FollowLinks {
-				c.skippedLinks++
+				// 默认模式：软链接转为同名文本文件上传（内容 = readlink 原值；断链也照常上传）
+				target, err := os.Readlink(path)
+				if err != nil {
+					return fmt.Errorf("读取软链接 %s 失败: %w", path, err)
+				}
+				c.linkCount++
+				c.jobs = append(c.jobs, uploadJob{local: path, key: key, linkTarget: target})
 				return nil
 			}
 			return c.addSymlinkTarget(path, relSlash, keyPrefix)
