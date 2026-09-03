@@ -25,7 +25,9 @@ vet:
 
 # 文档页从根 README/CHANGELOG 复制生成（替代软链，避免 Windows/CI 下软链失效），
 # 产物被 .gitignore 忽略、不入库；改文档仍只改根文件即可。
+# mkdir -p：docs/ 目录可能因空目录不被 git 跟踪而在 fresh checkout 中不存在。
 docs/sync:
+	mkdir -p docs
 	cp README.md docs/index.md
 	cp CHANGELOG.md docs/changelog.md
 
