@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/seqyuan/aos/internal/config"
 	"github.com/volcengine/ve-tos-golang-sdk/v2/tos"
@@ -62,30 +63,63 @@ func RM(ctx context.Context, client *tos.ClientV2, cfg config.Config, opt RMOpti
 			return err
 		},
 		deleteBatch: func(c context.Context, bucket string, keys []string) []string {
-			var failed []string
+			// 按 1000 分批；并发删除各批（worker 数同 defaultConcurrency），失败聚合返回。
+			var batches [][]string
 			for start := 0; start < len(keys); start += deleteBatchSize {
 				end := start + deleteBatchSize
 				if end > len(keys) {
 					end = len(keys)
 				}
-				batch := keys[start:end]
-				objs := make([]tos.ObjectTobeDeleted, 0, len(batch))
-				for _, k := range batch {
-					objs = append(objs, tos.ObjectTobeDeleted{Key: k})
-				}
-				out, err := client.DeleteMultiObjects(c, &tos.DeleteMultiObjectsInput{
-					Bucket:  bucket,
-					Objects: objs,
-					Quiet:   true,
-				})
-				if err != nil {
-					failed = append(failed, batch...)
-					continue
-				}
-				for _, e := range out.Error {
-					failed = append(failed, e.Key)
-				}
+				batches = append(batches, keys[start:end])
 			}
+			if len(batches) == 0 {
+				return nil
+			}
+			workers := defaultConcurrency()
+			if workers > len(batches) {
+				workers = len(batches)
+			}
+			var (
+				wg     sync.WaitGroup
+				mu     sync.Mutex
+				failed []string
+			)
+			ch := make(chan []string)
+			for i := 0; i < workers; i++ {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					for batch := range ch {
+						objs := make([]tos.ObjectTobeDeleted, 0, len(batch))
+						for _, k := range batch {
+							objs = append(objs, tos.ObjectTobeDeleted{Key: k})
+						}
+						out, err := client.DeleteMultiObjects(c, &tos.DeleteMultiObjectsInput{
+							Bucket:  bucket,
+							Objects: objs,
+							Quiet:   true,
+						})
+						var batchFailed []string
+						if err != nil {
+							batchFailed = batch
+						} else {
+							for _, e := range out.Error {
+								batchFailed = append(batchFailed, e.Key)
+							}
+						}
+						if len(batchFailed) > 0 {
+							mu.Lock()
+							failed = append(failed, batchFailed...)
+							mu.Unlock()
+						}
+					}
+				}()
+			}
+			for _, b := range batches {
+				ch <- b
+			}
+			close(ch)
+			wg.Wait()
 			return failed
 		},
 		listUploads: func(c context.Context, bucket, prefix string) ([]tos.ListedUpload, error) {
@@ -204,8 +238,12 @@ func rmExecute(ctx context.Context, ops rmOps, bucket, prefix string, opt RMOpti
 		fmt.Fprintln(w)
 	}
 	if res.FailedObjects > 0 {
+		retry := opt.Path
+		if retry == "" {
+			retry = "tos://" + bucket + "/" + strings.TrimSuffix(prefix, "/")
+		}
 		return res, fmt.Errorf("删除失败 %d 个对象（已删除 %d 个；重试 aos rm %s -r -f 可继续删除剩余对象）",
-			res.FailedObjects, res.DeletedObjects, "tos://"+bucket+"/"+strings.TrimSuffix(prefix, "/"))
+			res.FailedObjects, res.DeletedObjects, retry)
 	}
 	return res, nil
 }
