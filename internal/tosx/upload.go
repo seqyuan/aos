@@ -19,6 +19,7 @@ import (
 // UploadOptions 上传选项（aos cp <本地> tos://<bucket>/<前缀>）。
 // 目标前缀直接铺入：每个文件的 key = <TargetPrefix> + 相对路径，不再自动拼目录名。
 type UploadOptions struct {
+	Bucket       string         // 目标桶（来自 tos:// 路径；空则回退 cfg.Bucket）
 	TargetPrefix string         // 目标 TOS 前缀（ParseTOSPath 解析结果，已带尾斜杠或为空）
 	LocalPath    string         // 本地目录或文件，支持相对路径
 	Concurrency  int            // 并发数
@@ -101,10 +102,8 @@ func Upload(ctx context.Context, client *tos.ClientV2, cfg config.Config, opt Up
 
 	// 5.5 任务记录：开始 + 软链接明细（只记录默认模式的普通文件与转文本的软链接）
 	// 远端前缀记录完整 tos://bucket/前缀，便于下载侧按前缀匹配 up 任务还原软链接
-	remotePrefix := basePrefix
-	if cfg.Bucket != "" {
-		remotePrefix = "tos://" + cfg.Bucket + "/" + basePrefix
-	}
+	bucket := uploadDestBucket(opt, cfg)
+	remotePrefix := uploadRemotePrefix(bucket, basePrefix)
 	taskID := int64(0)
 	var recorder UploadRecorder = opt.Recorder
 	if recorder != nil {
@@ -138,7 +137,7 @@ func Upload(ctx context.Context, client *tos.ClientV2, cfg config.Config, opt Up
 
 	// 6. 打印计划
 	fmt.Fprintf(w, "上传 %d 个文件（共 %s）到 tos://%s/%s\n",
-		totalFiles, human.Size(totalBytes), cfg.Bucket, basePrefix)
+		totalFiles, human.Size(totalBytes), bucket, basePrefix)
 	if linkCount > 0 {
 		fmt.Fprintf(w, "其中 %d 个软链接转为同名文本文件（内容为链接目标地址）\n", linkCount)
 	}
@@ -148,10 +147,7 @@ func Upload(ctx context.Context, client *tos.ClientV2, cfg config.Config, opt Up
 	printLinkSkipSummary(w, collected)
 
 	// 7. 并发上传
-	concurrency := opt.Concurrency
-	if concurrency <= 0 {
-		concurrency = defaultConcurrency()
-	}
+	concurrency := clampConcurrency(opt.Concurrency)
 	// 上传断点续传：checkpoint 集中存于上传根目录 .aos/checkpoints/
 	// （.aos 默认跳过，不会把 checkpoint 残留当数据上传；与下载目录结构对称）
 	checkpointDir := ""
@@ -216,7 +212,7 @@ func Upload(ctx context.Context, client *tos.ClientV2, cfg config.Config, opt Up
 						countFollow(0, 0, 1, 0)
 						continue
 					}
-					err := UploadOne(ctx, client, cfg.Bucket, j.key, j.local, opt.Checkpoint, checkpointDir, opt.PartSize, opt.TaskNum)
+					err := UploadOne(ctx, client, bucket, j.key, j.local, opt.Checkpoint, checkpointDir, opt.PartSize, opt.TaskNum)
 					if err != nil {
 						countFollow(0, 1, 0, 0)
 						followMu.Lock()
@@ -236,9 +232,9 @@ func Upload(ctx context.Context, client *tos.ClientV2, cfg config.Config, opt Up
 				var err error
 				if j.linkTarget != "" {
 					// 默认模式：软链接转为同名文本文件上传（内容为 readlink 原值）
-					err = UploadText(ctx, client, cfg.Bucket, j.key, j.linkTarget)
+					err = UploadText(ctx, client, bucket, j.key, j.linkTarget)
 				} else {
-					err = UploadOne(ctx, client, cfg.Bucket, j.key, j.local, opt.Checkpoint, checkpointDir, opt.PartSize, opt.TaskNum)
+					err = UploadOne(ctx, client, bucket, j.key, j.local, opt.Checkpoint, checkpointDir, opt.PartSize, opt.TaskNum)
 				}
 				if err != nil {
 					reportErr(err)
@@ -360,6 +356,22 @@ func collectUploadJobs(localPath, basePrefix string, opt UploadOptions, w io.Wri
 		}
 	}
 	return collectedJobs{jobs: c.jobs, linkCount: c.linkCount, brokenLinks: c.brokenLinks, skippedTmp: c.skippedTmp}, nil
+}
+
+// uploadDestBucket 上传目标桶：优先 tos:// 路径里的桶，否则配置默认桶。
+func uploadDestBucket(opt UploadOptions, cfg config.Config) string {
+	if opt.Bucket != "" {
+		return opt.Bucket
+	}
+	return cfg.Bucket
+}
+
+// uploadRemotePrefix 把桶与对象前缀拼成任务库里的 tos://bucket/前缀；桶为空时退回裸前缀。
+func uploadRemotePrefix(bucket, basePrefix string) string {
+	if bucket == "" {
+		return basePrefix
+	}
+	return "tos://" + bucket + "/" + basePrefix
 }
 
 // collector 收集上传任务；visited 记录已展开的目录 realpath 用于防循环。
@@ -492,14 +504,28 @@ func isTmpSuffix(name string) bool {
 	return strings.HasSuffix(name, ".checkpoint") || strings.HasSuffix(name, ".tmp")
 }
 
+// maxConcurrency 文件级并发上限（与 README「最多 16」一致；-j 超出时夹死）。
+const maxConcurrency = 16
+
 // defaultConcurrency 返回默认文件级并发数。
 func defaultConcurrency() int {
 	n := runtime.NumCPU()
-	if n > 16 {
-		return 16
+	if n > maxConcurrency {
+		return maxConcurrency
 	}
 	if n < 4 {
 		return 4
+	}
+	return n
+}
+
+// clampConcurrency 规范化文件级并发：<=0 用默认；超过上限夹到 maxConcurrency。
+func clampConcurrency(n int) int {
+	if n <= 0 {
+		return defaultConcurrency()
+	}
+	if n > maxConcurrency {
+		return maxConcurrency
 	}
 	return n
 }

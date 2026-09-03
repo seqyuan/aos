@@ -325,7 +325,11 @@ func TestFindTaskByRemotePrefix(t *testing.T) {
 	}
 	defer database.Close()
 
-	if _, err := database.CreateTask(Task{Direction: "up", LocalPath: "/data/x", RemotePrefix: "tos://b/P/x"}); err != nil {
+	id, err := database.CreateTask(Task{Direction: "up", LocalPath: "/data/x", RemotePrefix: "tos://b/P/x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.FinishTask(id, "done", ""); err != nil {
 		t.Fatal(err)
 	}
 	// 同前缀的 down 任务不应被匹配
@@ -349,5 +353,73 @@ func TestFindTaskByRemotePrefix(t *testing.T) {
 		t.Fatal(err)
 	} else if ok {
 		t.Fatal("不应匹配到任务")
+	}
+}
+
+// 还原软链接只能用成功完成的 up：running / break 即使更新也不该覆盖 done。
+func TestFindTaskByRemotePrefixSkipsIncomplete(t *testing.T) {
+	dir := t.TempDir()
+	database, err := Open(filepath.Join(dir, "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	doneID, err := database.CreateTask(Task{Direction: "up", LocalPath: "/data/good", RemotePrefix: "tos://b/P/x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.FinishTask(doneID, "done", ""); err != nil {
+		t.Fatal(err)
+	}
+	breakID, err := database.CreateTask(Task{Direction: "up", LocalPath: "/data/bad", RemotePrefix: "tos://b/P/x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.FinishTask(breakID, "break", "boom"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.CreateTask(Task{Direction: "up", LocalPath: "/data/running", RemotePrefix: "tos://b/P/x"}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, ok, err := database.FindTaskByRemotePrefix("tos://b/P/x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("应匹配到 done 的 up 任务")
+	}
+	if got.ID != doneID || got.Status != "done" {
+		t.Fatalf("应匹配 done 任务 %d，实际 id=%d status=%s", doneID, got.ID, got.Status)
+	}
+}
+
+// v0.4.4 之前 up 只记裸前缀；下载侧按 tos://bucket/前缀查询时应仍能命中。
+func TestFindTaskByRemotePrefixMatchesLegacyBarePrefix(t *testing.T) {
+	dir := t.TempDir()
+	database, err := Open(filepath.Join(dir, "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	id, err := database.CreateTask(Task{Direction: "up", LocalPath: "/data/x", RemotePrefix: "P/x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.FinishTask(id, "done", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	got, ok, err := database.FindTaskByRemotePrefix("tos://b/P/x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("应匹配到旧格式裸前缀 P/x")
+	}
+	if got.ID != id {
+		t.Fatalf("id=%d want %d", got.ID, id)
 	}
 }

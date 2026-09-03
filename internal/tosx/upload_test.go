@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/seqyuan/aos/internal/config"
 )
 
 func TestNormalizeKey(t *testing.T) {
@@ -307,5 +309,47 @@ func TestCollectTopLevelSymlinkFollow(t *testing.T) {
 	}
 	if !collected.jobs[0].followLink || collected.jobs[0].key != "C/SPI/x" {
 		t.Fatalf("顶层链接溯源 job 异常: %+v", collected.jobs[0])
+	}
+}
+
+func TestUploadDestBucketPrefersOptionOverConfig(t *testing.T) {
+	got := uploadDestBucket(UploadOptions{Bucket: "path-bucket"}, config.Config{Bucket: "cfg-bucket"})
+	if got != "path-bucket" {
+		t.Fatalf("got %q, want path-bucket（tos:// 路径里的桶应覆盖配置默认桶）", got)
+	}
+}
+
+func TestUploadDestBucketFallsBackToConfig(t *testing.T) {
+	got := uploadDestBucket(UploadOptions{}, config.Config{Bucket: "cfg-bucket"})
+	if got != "cfg-bucket" {
+		t.Fatalf("got %q, want cfg-bucket", got)
+	}
+}
+
+func TestUploadRemotePrefixIncludesBucket(t *testing.T) {
+	if got := uploadRemotePrefix("my-bucket", "P/x"); got != "tos://my-bucket/P/x" {
+		t.Fatalf("got %q, want tos://my-bucket/P/x", got)
+	}
+	if got := uploadRemotePrefix("", "P/x"); got != "P/x" {
+		t.Fatalf("空 bucket 应保留裸前缀, got %q", got)
+	}
+}
+
+func TestClampConcurrency(t *testing.T) {
+	def := defaultConcurrency()
+	if got := clampConcurrency(0); got != def {
+		t.Fatalf("clampConcurrency(0) = %d, want default %d", got, def)
+	}
+	if got := clampConcurrency(-3); got != def {
+		t.Fatalf("clampConcurrency(-3) = %d, want default %d", got, def)
+	}
+	if got := clampConcurrency(1); got != 1 {
+		t.Fatalf("clampConcurrency(1) = %d, want 1", got)
+	}
+	if got := clampConcurrency(16); got != 16 {
+		t.Fatalf("clampConcurrency(16) = %d, want 16", got)
+	}
+	if got := clampConcurrency(10000); got != 16 {
+		t.Fatalf("clampConcurrency(10000) = %d, want 16（与 README 上限一致）", got)
 	}
 }

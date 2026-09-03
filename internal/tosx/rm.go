@@ -170,21 +170,15 @@ func rmExecute(ctx context.Context, ops rmOps, bucket, prefix string, opt RMOpti
 		return RMResult{}, nil
 	}
 
+	wholeBucket := strings.TrimSuffix(prefix, "/") == ""
+
 	// 确认（-f 跳过；非终端默认拒绝）
 	if !opt.Force {
 		confirm := opt.Confirm
 		if confirm == nil {
 			confirm = defaultConfirm
 		}
-		var prompt string
-		switch {
-		case len(files) > 0 && len(uploads) > 0:
-			prompt = fmt.Sprintf("将删除 %d 个对象、清理 %d 个未完成分片上传任务。确认? (y/N) ", len(files), len(uploads))
-		case len(files) > 0:
-			prompt = fmt.Sprintf("将删除 %d 个对象。确认? (y/N) ", len(files))
-		default:
-			prompt = fmt.Sprintf("将清理 %d 个未完成分片上传任务。确认? (y/N) ", len(uploads))
-		}
+		prompt := rmConfirmPrompt(bucket, wholeBucket, len(files), len(uploads))
 		ok, err := confirm(prompt)
 		if err != nil {
 			return RMResult{}, err
@@ -195,6 +189,8 @@ func rmExecute(ctx context.Context, ops rmOps, bucket, prefix string, opt RMOpti
 			}
 			return RMResult{}, nil
 		}
+	} else if wholeBucket && !opt.Quiet {
+		fmt.Fprintf(w, "警告: 将删除整个 bucket %s 下的全部对象\n", bucket)
 	}
 
 	// 删除对象（分批 ≤1000，失败不中断）
@@ -245,7 +241,33 @@ func rmExecute(ctx context.Context, ops rmOps, bucket, prefix string, opt RMOpti
 		return res, fmt.Errorf("删除失败 %d 个对象（已删除 %d 个；重试 aos rm %s -r -f 可继续删除剩余对象）",
 			res.FailedObjects, res.DeletedObjects, retry)
 	}
+	if res.AbortFailed > 0 {
+		return res, fmt.Errorf("清理失败 %d 个未完成分片上传任务（已清理 %d 个）",
+			res.AbortFailed, res.AbortedUploads)
+	}
 	return res, nil
+}
+
+// rmConfirmPrompt 构造 -r 删除前的确认文案。空前缀视为整桶。
+func rmConfirmPrompt(bucket string, wholeBucket bool, nFiles, nUploads int) string {
+	if wholeBucket {
+		switch {
+		case nFiles > 0 && nUploads > 0:
+			return fmt.Sprintf("将删除整个 bucket %s 中的 %d 个对象、清理 %d 个未完成分片上传任务。确认? (y/N) ", bucket, nFiles, nUploads)
+		case nFiles > 0:
+			return fmt.Sprintf("将删除整个 bucket %s 中的 %d 个对象。确认? (y/N) ", bucket, nFiles)
+		default:
+			return fmt.Sprintf("将清理整个 bucket %s 中的 %d 个未完成分片上传任务。确认? (y/N) ", bucket, nUploads)
+		}
+	}
+	switch {
+	case nFiles > 0 && nUploads > 0:
+		return fmt.Sprintf("将删除 %d 个对象、清理 %d 个未完成分片上传任务。确认? (y/N) ", nFiles, nUploads)
+	case nFiles > 0:
+		return fmt.Sprintf("将删除 %d 个对象。确认? (y/N) ", nFiles)
+	default:
+		return fmt.Sprintf("将清理 %d 个未完成分片上传任务。确认? (y/N) ", nUploads)
+	}
 }
 
 // listMultipartUploads 分页列出指定前缀下所有未完成的分片上传任务。
