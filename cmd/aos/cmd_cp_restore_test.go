@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/pflag"
+
 	"github.com/seqyuan/aos/internal/db"
 )
 
@@ -291,5 +293,18 @@ func TestRestoreLinksAfterDownloadSilentWhenNoUpTask(t *testing.T) {
 	})
 	if strings.Contains(out, "跳过还原软链接") {
 		t.Fatalf("无匹配 up 任务不应提示: %q", out)
+	}
+}
+
+// --skip-existing 应被 cp 命令解析（上传专用 flag，不会误吞其它 flag）。
+func TestCPSkipExistingFlagParses(t *testing.T) {
+	fs := pflag.NewFlagSet("aos cp", pflag.ContinueOnError)
+	skip := fs.Bool("skip-existing", false, "")
+	quiet := fs.BoolP("quiet", "q", false, "")
+	if ok, err := parseFlagSet(fs, []string{"--skip-existing", "--quiet"}, "usage"); !ok || err != nil {
+		t.Fatalf("--skip-existing 与后续 flag 应正常解析: ok=%v err=%v", ok, err)
+	}
+	if !*skip || !*quiet {
+		t.Fatalf("skip=%v quiet=%v, want true/true", *skip, *quiet)
 	}
 }

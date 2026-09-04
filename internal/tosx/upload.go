@@ -3,6 +3,7 @@ package tosx
 import (
 	"context"
 	"fmt"
+	"hash/crc64"
 	"io"
 	"os"
 	"path/filepath"
@@ -27,6 +28,7 @@ type UploadOptions struct {
 	PartSize     int64          // 分片大小（0 用默认 20MB）
 	TaskNum      int            // 单文件分片并发（0 用默认 4）
 	FollowLinks  bool           // 软链接溯源上传真实内容（不记录到任务数据库）
+	SkipExisting bool           // 跳过云端已存在且内容一致的对象（同 key、同大小、同 crc64）
 	Exclude      []string       // 排除规则（glob）
 	Quiet        bool           // 安静模式
 	Recorder     UploadRecorder // 任务记录器（可为 nil）
@@ -77,6 +79,24 @@ func Upload(ctx context.Context, client *tos.ClientV2, cfg config.Config, opt Up
 		return nil
 	}
 
+	// 4. --skip-existing：跳过云端已存在且内容一致的对象（同 key、同大小、同 crc64）。
+	// 云端指纹来自 List 响应（TOS 服务端对每个对象计算 crc64），本地用同一算法复算比对；
+	// 被跳过的文件不记录任务库、不进进度（与“无需上传”一致）。
+	bucket := uploadDestBucket(opt, cfg)
+	skippedExisting := 0
+	if opt.SkipExisting {
+		cloud, err := listCloudFingerprints(ctx, client, bucket, basePrefix)
+		if err != nil {
+			return fmt.Errorf("列出目标前缀以判断已存在文件失败（可去掉 --skip-existing 后重试）: %w", err)
+		}
+		jobs, skippedExisting = filterExistingJobs(jobs, cloud)
+		if len(jobs) == 0 {
+			printLinkSkipSummary(w, collected)
+			fmt.Fprintf(w, "全部 %d 个文件已在云端且内容一致，无需上传 ✅（--skip-existing）\n", skippedExisting)
+			return nil
+		}
+	}
+
 	// 5. 统计总大小与分类。默认模式的软链接转文本文件计入 total/done/failed（会记库）；
 	// 溯源链接文件（-follow-links）不计入、不记库。
 	var totalBytes int64
@@ -102,7 +122,6 @@ func Upload(ctx context.Context, client *tos.ClientV2, cfg config.Config, opt Up
 
 	// 5.5 任务记录：开始 + 软链接明细（只记录默认模式的普通文件与转文本的软链接）
 	// 远端前缀记录完整 tos://bucket/前缀，便于下载侧按前缀匹配 up 任务还原软链接
-	bucket := uploadDestBucket(opt, cfg)
 	remotePrefix := uploadRemotePrefix(bucket, basePrefix)
 	taskID := int64(0)
 	var recorder UploadRecorder = opt.Recorder
@@ -138,6 +157,9 @@ func Upload(ctx context.Context, client *tos.ClientV2, cfg config.Config, opt Up
 	// 6. 打印计划
 	fmt.Fprintf(w, "上传 %d 个文件（共 %s）到 tos://%s/%s\n",
 		totalFiles, human.Size(totalBytes), bucket, basePrefix)
+	if skippedExisting > 0 {
+		fmt.Fprintf(w, "跳过 %d 个已在云端且内容一致的文件（--skip-existing）\n", skippedExisting)
+	}
 	if linkCount > 0 {
 		fmt.Fprintf(w, "其中 %d 个软链接转为同名文本文件（内容为链接目标地址）\n", linkCount)
 	}
@@ -372,6 +394,76 @@ func uploadRemotePrefix(bucket, basePrefix string) string {
 		return basePrefix
 	}
 	return "tos://" + bucket + "/" + basePrefix
+}
+
+// cloudFingerprint 云端对象指纹（来自 List 响应：TOS 服务端对每个对象计算 crc64）。
+type cloudFingerprint struct {
+	size  int64
+	crc64 uint64
+}
+
+// listCloudFingerprints 列出 bucket 下 basePrefix 前缀所有对象 → key → {size, crc64}。
+func listCloudFingerprints(ctx context.Context, client *tos.ClientV2, bucket, basePrefix string) (map[string]cloudFingerprint, error) {
+	objs, err := ListAll(ctx, client, bucket, basePrefix)
+	if err != nil {
+		return nil, err
+	}
+	m := make(map[string]cloudFingerprint, len(objs))
+	for _, o := range objs {
+		m[o.Key] = cloudFingerprint{size: o.Size, crc64: o.HashCrc64ecma}
+	}
+	return m, nil
+}
+
+// filterExistingJobs 过滤出真正需要上传的 job：云端无同 key → 传；
+// 同 key 但大小不同 → 传；大小相同则本地复算 crc64，一致 → 跳过（云端无 crc64 指纹时保守上传）。
+func filterExistingJobs(jobs []uploadJob, cloud map[string]cloudFingerprint) (kept []uploadJob, skipped int) {
+	kept = make([]uploadJob, 0, len(jobs))
+	for _, j := range jobs {
+		cf, ok := cloud[j.key]
+		if !ok {
+			kept = append(kept, j)
+			continue
+		}
+		// 内容指纹：软链接转文本 job 的内容是 linkTarget 文本；其余是本地文件
+		size, crc, err := localContentFingerprint(j)
+		if err != nil {
+			kept = append(kept, j) // 本地文件读取失败：保守上传
+			continue
+		}
+		if cf.size != size {
+			kept = append(kept, j)
+			continue
+		}
+		if cf.crc64 == 0 || cf.crc64 != crc {
+			// 云端无 crc64（老对象等）或内容不一致：保守上传
+			kept = append(kept, j)
+			continue
+		}
+		skipped++
+	}
+	return kept, skipped
+}
+
+// localContentFingerprint 计算一个 job 本地内容的 size 与 crc64（crc64.ECMA，与 TOS 服务端一致）。
+func localContentFingerprint(j uploadJob) (size int64, crc uint64, err error) {
+	if j.linkTarget != "" {
+		b := []byte(j.linkTarget)
+		h := crc64.New(tos.DefaultCrcTable())
+		_, _ = h.Write(b)
+		return int64(len(b)), h.Sum64(), nil
+	}
+	f, err := os.Open(j.local)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer f.Close()
+	h := crc64.New(tos.DefaultCrcTable())
+	n, err := io.Copy(h, f)
+	if err != nil {
+		return 0, 0, err
+	}
+	return n, h.Sum64(), nil
 }
 
 // collector 收集上传任务；visited 记录已展开的目录 realpath 用于防循环。

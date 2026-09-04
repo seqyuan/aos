@@ -353,3 +353,96 @@ func TestClampConcurrency(t *testing.T) {
 		t.Fatalf("clampConcurrency(10000) = %d, want 16（与 README 上限一致）", got)
 	}
 }
+
+// ---- --skip-existing：filterExistingJobs 与本地 crc64 ----
+
+// localContentFingerprint 对文件与文本内容算出的 crc64 应与 TOS 服务端一致（crc64.ECMA）。
+func TestLocalContentFingerprintCRC64(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "f.txt")
+	if err := writeTestFile(path, "hello aos"); err != nil {
+		t.Fatal(err)
+	}
+	// 文本内容与文件内容相同 → crc64 应一致（服务端对对象内容算 crc64）
+	wantSize, wantCRC, err := localContentFingerprint(uploadJob{local: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotSize, gotCRC, err := localContentFingerprint(uploadJob{linkTarget: "hello aos"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wantSize != gotSize || wantCRC != gotCRC {
+		t.Fatalf("file crc64=(%d,%d) != text crc64=(%d,%d)，同一内容应一致", wantSize, wantCRC, gotSize, gotCRC)
+	}
+	if wantSize != int64(len("hello aos")) {
+		t.Fatalf("size = %d, want %d", wantSize, len("hello aos"))
+	}
+}
+
+// filterExistingJobs：云端无/不同 → 上传；相同大小+crc64 → 跳过；云端无 crc64 → 保守上传。
+func TestFilterExistingJobs(t *testing.T) {
+	dir := t.TempDir()
+	// 两个本地文件：a.txt 内容 "same"；b.txt 内容 "xxxx"（同长度 4 不同内容）
+	if err := writeTestFile(filepath.Join(dir, "a.txt"), "same"); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeTestFile(filepath.Join(dir, "b.txt"), "xxxx"); err != nil {
+		t.Fatal(err)
+	}
+	jobs := []uploadJob{
+		{local: filepath.Join(dir, "a.txt"), key: "P/a.txt"},
+		{local: filepath.Join(dir, "b.txt"), key: "P/b.txt"},
+		{local: filepath.Join(dir, "a.txt"), key: "P/new.txt"},  // 云端没有此 key
+		{local: filepath.Join(dir, "b.txt"), key: "P/b2.txt"},   // 云端同 size 但无 crc64 指纹
+		{local: filepath.Join(dir, "a.txt"), key: "P/size.txt"}, // 云端 size 不同
+	}
+	faSize, faCRC, _ := localContentFingerprint(jobs[0])
+	fbSize, fbCRC, _ := localContentFingerprint(jobs[1])
+
+	cloud := map[string]cloudFingerprint{
+		"P/a.txt":    {size: faSize, crc64: faCRC},     // 内容一致 → 跳过
+		"P/b.txt":    {size: fbSize, crc64: fbCRC + 1}, // 同 size 不同 crc64 → 上传
+		"P/b2.txt":   {size: fbSize, crc64: 0},         // 云端无 crc64 指纹 → 保守上传
+		"P/size.txt": {size: faSize + 1, crc64: faCRC}, // size 不同 → 上传
+	}
+
+	kept, skipped := filterExistingJobs(jobs, cloud)
+	if skipped != 1 {
+		t.Fatalf("skipped = %d, want 1（仅 P/a.txt 内容一致应跳过）", skipped)
+	}
+	wantKept := map[string]bool{"P/b.txt": true, "P/new.txt": true, "P/b2.txt": true, "P/size.txt": true}
+	if len(kept) != len(wantKept) {
+		t.Fatalf("kept = %d, want %d: %+v", len(kept), len(wantKept), kept)
+	}
+	for _, j := range kept {
+		if !wantKept[j.key] {
+			t.Fatalf("不应保留 key %q", j.key)
+		}
+	}
+}
+
+// filterExistingJobs 对软链接转文本 job（linkTarget）按文本内容指纹判断。
+func TestFilterExistingJobsLinkTarget(t *testing.T) {
+	jobs := []uploadJob{
+		{key: "P/link.bam", linkTarget: "/data/share/big.bam"},
+	}
+	txtSize, txtCRC, err := localContentFingerprint(jobs[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	cloud := map[string]cloudFingerprint{
+		"P/link.bam": {size: txtSize, crc64: txtCRC}, // 内容一致 → 跳过
+	}
+	kept, skipped := filterExistingJobs(jobs, cloud)
+	if skipped != 1 || len(kept) != 0 {
+		t.Fatalf("linkTarget 文本一致应跳过: kept=%d skipped=%d", len(kept), skipped)
+	}
+
+	// 云端内容不同（同 size 不同 crc64）→ 上传
+	cloud["P/link.bam"] = cloudFingerprint{size: txtSize, crc64: txtCRC + 9}
+	kept, skipped = filterExistingJobs(jobs, cloud)
+	if skipped != 0 || len(kept) != 1 {
+		t.Fatalf("内容不同应上传: kept=%d skipped=%d", len(kept), skipped)
+	}
+}

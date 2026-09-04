@@ -120,6 +120,7 @@ go build -o aos ./cmd/aos   # version 显示 dev；要带版本号用 make build
 
 - 目标前缀**直接铺入**：本地目录 `./dataset` 下的每个文件，其 key = 目标前缀 + 相对路径
 - 目录默认递归上传；单文件上传时目标路径整体即对象 key（bucket 之后的全部内容，通常以文件名结尾）
+- **断线后重跑不重复上传**：`--skip-existing` 先列云端目标前缀，跳过云端已存在且内容一致的对象（同 key、同大小、同 crc64，本地用同一算法复算比对）；被跳过文件不计入任务库。中断时未完成的大文件用 `--checkpoint` 分片断点续传（两机制互补）
 - 上传/下载任务均写入 SQLite（时间、方向 up/down、本地路径、远端路径、文件/字节进度、状态 running/done/break、错误信息），便于 `aos stat` 查看；`aos cp <本地路径>` 按上传记录还原（含软链接文本文件的 symlink 还原）
 - `--no-record` 可显式跳过记录
 - Ctrl+C / 报错退出时任务标记为 `break`，正常完成标记为 `done`
@@ -205,6 +206,7 @@ go build -o aos ./cmd/aos   # version 显示 dev；要带版本号用 make build
 -e <规则>         排除规则，逗号分隔，支持通配符（*.tmp,.git）；规则若以 - 开头请用 --exclude=规则 形式
 --checkpoint      大文件分片上传断点续传（checkpoint 存于上传根目录 .aos/checkpoints/）
 --follow-links    软链接溯源上传链接目标内容（这些文件不记录任务）
+--skip-existing   跳过云端已存在且内容一致的对象（同 key、同大小、同 crc64；断线后重跑不再重复上传）
 
 下载:
 -f               忽略下载清单，全部重下
