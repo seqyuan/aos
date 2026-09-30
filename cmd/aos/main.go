@@ -71,6 +71,7 @@ func run(args []string) int {
 
 type baseFlags struct {
 	configPath string
+	provider   string
 	endpoint   string
 	region     string
 	bucket     string
@@ -78,6 +79,7 @@ type baseFlags struct {
 
 func (b *baseFlags) register(fs *pflag.FlagSet) {
 	fs.StringVarP(&b.configPath, "config", "c", "", "配置文件路径（默认：二进制同目录 aos.json）")
+	fs.StringVar(&b.provider, "provider", "", "覆盖后端（tos | oss；缺省按 endpoint 自动识别）")
 	fs.StringVar(&b.endpoint, "endpoint", "", "覆盖 endpoint（如 tos-cn-beijing.ivolces.com / oss-cn-beijing.aliyuncs.com）")
 	fs.StringVar(&b.region, "region", "", "覆盖 region（如 cn-beijing）")
 	fs.StringVar(&b.bucket, "bucket", "", "覆盖 bucket 名称")
@@ -91,6 +93,9 @@ func (b *baseFlags) loadConfig() (config.Config, string, error) {
 	cfg, err := config.Load(path)
 	if err != nil {
 		return cfg, path, err
+	}
+	if b.provider != "" {
+		cfg.Provider = b.provider
 	}
 	if b.endpoint != "" {
 		cfg.Endpoint = strings.TrimSuffix(strings.TrimPrefix(b.endpoint, "https://"), "/")
@@ -247,41 +252,16 @@ func cmdLS(args []string) int {
 // ---------------------------------------------------------------------------
 // aos config
 
+// aos config 仅保留 `aos config set`（写入凭据）。
+// 查看/定位配置请直接看 aos.json：默认位于二进制同目录，可用 -c 指定路径。
 func cmdConfig(args []string) int {
 	if len(args) > 0 && args[0] == "set" {
 		return cmdConfigSet(args[1:])
 	}
-	fs := pflag.NewFlagSet("aos config", pflag.ContinueOnError)
-	configPath := fs.StringP("config", "c", "", "配置文件路径（默认：二进制同目录 aos.json）")
-	if ok, err := parseFlagSet(fs, args, "用法: aos config [path] [-c 配置文件]"); !ok {
-		return 2
-	} else if err != nil {
-		return 2
-	}
-	showPath := fs.NArg() > 0 && fs.Arg(0) == "path"
-	path, err := config.ResolvePath(*configPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "aos config: %v\n", err)
-		return 1
-	}
-	if showPath {
-		fmt.Println(path)
-		return 0
-	}
-	// 默认展示当前配置
-	cfg, err := config.Load(path)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "aos config: %v\n", err)
-		return 1
-	}
-	fmt.Printf("配置文件: %s\n", path)
-	fmt.Printf("  provider:  %s\n", cfg.ProviderOrDefault())
-	fmt.Printf("  endpoint:  %s\n", cfg.Endpoint)
-	fmt.Printf("  region:    %s\n", cfg.Region)
-	fmt.Printf("  bucket:    %s\n", cfg.Bucket)
-	fmt.Printf("  access_key: %s\n", config.MaskSecret(cfg.AccessKey))
-	fmt.Printf("  secret_key: %s\n", config.MaskSecret(cfg.SecretKey))
-	return 0
+	fmt.Fprintln(os.Stderr, "aos config: 仅支持 `aos config set`（写入凭据）")
+	fmt.Fprintln(os.Stderr, "查看配置请直接查看 aos.json（默认位于二进制同目录，可用 -c 指定路径）")
+	fmt.Fprintln(os.Stderr, "用法: aos config set --ak <AK> --sk <SK> [--provider tos|oss] [--endpoint ...] [--region ...] [--bucket ...] [-c 配置文件]")
+	return 2
 }
 
 func cmdConfigSet(args []string) int {
@@ -313,6 +293,9 @@ func cmdConfigSet(args []string) int {
 	}
 	cfg.AccessKey = *ak
 	cfg.SecretKey = *sk
+	if b.provider != "" {
+		cfg.Provider = b.provider
+	}
 	if b.endpoint != "" {
 		cfg.Endpoint = strings.TrimSuffix(strings.TrimPrefix(b.endpoint, "https://"), "/")
 	}
@@ -327,7 +310,7 @@ func cmdConfigSet(args []string) int {
 		return 1
 	}
 	fmt.Printf("已写入配置: %s\n", path)
-	fmt.Printf("  endpoint=%s region=%s bucket=%s ak=%s\n", cfg.Endpoint, cfg.Region, cfg.Bucket, config.MaskSecret(cfg.AccessKey))
+	fmt.Printf("  provider=%s endpoint=%s region=%s bucket=%s ak=%s\n", cfg.ProviderOrDefault(), cfg.Endpoint, cfg.Region, cfg.Bucket, config.MaskSecret(cfg.AccessKey))
 	return 0
 }
 
@@ -428,11 +411,12 @@ func printUsage(w *os.File) {
   aos rm <云路径> [选项]          删除对象（-r 递归删除前缀，-f 跳过确认）
   aos stat [选项]                  查询传输历史（上传/下载均记录；默认：中断/失败 + 近 2 天；-a 全部）
   aos check [选项]                 诊断连接与权限
-  aos config [set] [选项]          查看/配置凭据
+  aos config set [选项]            写入凭据（查看配置请直接看 aos.json）
   aos version                      版本号
 
 通用选项:
   -c, --config <路径>              指定配置文件（默认：二进制同目录 aos.json）
+  --provider <tos|oss>             覆盖后端（缺省按 endpoint 自动识别）
 
 cp 示例（上传：本地在前）:
   aos cp ./dataset tos://example-bucket/ACME2026001/PM-ACME2026001-01/dataset

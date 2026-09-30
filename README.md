@@ -9,7 +9,7 @@
 - **`rm`**：删除对象——单对象直接删（幂等）；`-r` 递归删除前缀下所有对象并顺带清理未完成分片上传任务；`-f` 跳过确认
 - **`stat`**：查询传输历史（上传/下载均记录；默认只显示中断/失败与近 2 天的任务，`-a` 显示全部）；`--id` 查看单次任务详情
 - **`check`**：连接与权限诊断（按 region 自动尝试公网 endpoint 回退）
-- **`config`**：查看 / 配置凭据
+- **`config`**：`config set` 写入凭据（自动 0600）；查看配置直接看 `aos.json`
 
 ## 安装
 
@@ -40,8 +40,9 @@ go build -o aos ./cmd/aos   # version 显示 dev；要带版本号用 make build
 ## 快速开始
 
 ```bash
-# 查看配置（凭据文件与二进制同目录，随二进制一起拷贝即可使用）
-./aos config
+# 配置：aos.json 与二进制同目录（随二进制一起拷贝即可使用，可直接编辑）；
+# 也可用 config set 写入凭据（自动 0600 权限）
+./aos config set --ak AK... --sk SK... --endpoint oss-cn-beijing-internal.aliyuncs.com --bucket sci-report
 
 # 查看目录树
 ./aos ls tos://example-bucket/ACME2026001
@@ -119,10 +120,9 @@ go build -o aos ./cmd/aos   # version 显示 dev；要带版本号用 make build
   - OSS 内网 / 专线：`oss-cn-beijing-internal.aliyuncs.com`；OSS 公网：`oss-cn-beijing.aliyuncs.com`
   - OSS 默认走 **https**；若内网 endpoint 只能 http，请显式写成 `http://oss-cn-beijing-internal.aliyuncs.com`
 - **OSS 的 region 可留空**（OSS 签名不依赖 region，endpoint 已含区域）。
-- 修改配置：`./aos config set --ak ... --sk ... [--provider oss] [--endpoint ...] [--region ...] [--bucket ...]`
-- 查看配置文件实际路径：`./aos config path`（可加 `-c` 指定路径）
+- 修改/写入配置：`./aos config set --ak ... --sk ... [--provider oss] [--endpoint ...] [--region ...] [--bucket ...] [-c 配置文件]`（查看配置请直接编辑/查看 `aos.json`）
 - 可用环境变量覆盖（便于 CI）：`AOS_AK` / `AOS_SK` / `AOS_ENDPOINT` / `AOS_REGION` / `AOS_BUCKET`，或 `AOS_CONFIG` 指定配置文件路径
-- 单次命令覆盖：`-c` / `--config`（配置文件）与 `--endpoint` / `--region` / `--bucket` 参数
+- 单次命令覆盖：`-c` / `--config`（配置文件）与 `--provider` / `--endpoint` / `--region` / `--bucket` 参数
 
 ## 路径规则
 

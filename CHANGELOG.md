@@ -8,7 +8,8 @@
   - 云路径 scheme 放宽：`tos://` / `oss://` / `s3://` 等价，后端由配置决定
   - OSS 使用官方 `aliyun-oss-go-sdk`：大文件分片上传/下载 + 断点续传、批量删除、孤儿分片清理；`--skip-existing` 在 OSS 下按同 key 同 size 命中时用 HEAD 取 CRC64 补齐（HEAD 失败则保守上传）
   - OSS 默认走 https（裸 endpoint 时 SDK 默认 http，已改为 https）；内网如需 http 可显式写 `http://` 前缀
-- **新功能：`-c` 作为 `--config` 短选项**（ls / cp / rm / check / config 均支持）；默认仍是二进制同目录 `aos.json`
+- **新功能：`-c` 作为 `--config` 短选项**（ls / cp / rm / check / config set 均支持），新增 `--provider` 覆盖；默认仍是二进制同目录 `aos.json`
+- **变更：`aos config` 仅保留 `set`**（写入凭据，自动 0600 权限）；移除 `aos config` 查看展示与 `aos config path`——查看/定位配置直接看 `aos.json` 即可（默认二进制同目录）
 - **包重命名**：`internal/tosx` → `internal/objstore`；`TOSPath`/`ParseTOSPath` → `CloudPath`/`ParseCloudPath`
 - **文档**：README/帮助文案补充 OSS 配置、`provider` 与 `-c` 说明
 
