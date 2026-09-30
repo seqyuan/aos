@@ -20,7 +20,7 @@ import (
 // 目标前缀直接铺入：每个文件的 key = <TargetPrefix> + 相对路径，不再自动拼目录名。
 type UploadOptions struct {
 	Bucket       string         // 目标桶（来自 tos:// 路径；空则回退 cfg.Bucket）
-	TargetPrefix string         // 目标 TOS 前缀（ParseTOSPath 解析结果，已带尾斜杠或为空）
+	TargetPrefix string         // 目标云前缀（ParseCloudPath 解析结果，已带尾斜杠或为空）
 	LocalPath    string         // 本地目录或文件，支持相对路径
 	Concurrency  int            // 并发数
 	Checkpoint   bool           // 大文件断点续传

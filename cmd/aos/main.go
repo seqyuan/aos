@@ -1,4 +1,4 @@
-// aos — 对象存储上传/下载/浏览命令行工具（当前后端为火山云 TOS）。
+// aos — 对象存储上传/下载/浏览命令行工具（后端：火山云 TOS / 阿里云 OSS）。
 //
 // 用法示例：
 //
@@ -418,6 +418,7 @@ func printUsage(w *os.File) {
 
 cp 示例（上传：本地在前）:
   aos cp ./dataset tos://example-bucket/ACME2026001/PM-ACME2026001-01/dataset
+  aos cp ./dataset oss://example-bucket/ACME2026001/PM-ACME2026001-01/dataset   # OSS 后端（需 oss 配置）
   aos cp ./dataset tos:///ACME2026001/PM-ACME2026001-01/dataset   # bucket 用配置默认
   aos cp dataset.zip tos://example-bucket/ACME2026001/PM-ACME2026001-01/dataset.zip
 
@@ -453,7 +454,8 @@ stat 示例:
 配置说明:
   配置文件默认位于 aos 二进制同目录的 aos.json，随二进制一起拷贝即可使用（-c 可指定其他路径）。
   后端自动识别：endpoint 含 aliyuncs.com 为 OSS、含 volces.com 为 TOS；也可在 aos.json 显式写 provider。
+  路径 scheme 需与配置后端一致（tos:// 配 TOS、oss:// 配 OSS；s3:// 中性），不一致会报错。
   内网/专线环境用内网 endpoint：TOS 为 tos-cn-beijing.ivolces.com，OSS 为 oss-cn-beijing-internal.aliyuncs.com。
-  可用环境变量 AOS_AK / AOS_SK / AOS_ENDPOINT / AOS_REGION / AOS_BUCKET / AOS_DB 覆盖。
+  可用环境变量 AOS_PROVIDER / AOS_AK / AOS_SK / AOS_ENDPOINT / AOS_REGION / AOS_BUCKET / AOS_DB 覆盖。
 `, version)
 }

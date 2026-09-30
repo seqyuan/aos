@@ -136,13 +136,13 @@ go build -o aos ./cmd/aos   # version 显示 dev；要带版本号用 make build
 | `example-bucket/ACME2026001`（仅 ls，首段等于默认 bucket） | bucket=`example-bucket`, prefix=`ACME2026001/` |
 | `ACME2026001/PM-ACME2026001-01/dataset`（仅 ls） | 纯前缀，使用默认 bucket |
 
-`cp` 的云上路径必须带 `tos://`（否则按本地路径处理）；`tos:///` 表示 bucket 用配置默认值。
+`cp` 的云上路径必须带 `tos://` 或 `oss://`（`s3://` 中性；否则按本地路径处理）；`tos:///`（或 `oss:///`）表示 bucket 用配置默认值。
 
 ## 上传语义
 
 - 目标前缀**直接铺入**：本地目录 `./dataset` 下的每个文件，其 key = 目标前缀 + 相对路径
 - 目录默认递归上传；单文件上传时目标路径整体即对象 key（bucket 之后的全部内容，通常以文件名结尾）
-- **断线后重跑不重复上传**：`--skip-existing` 先列云端目标前缀，跳过云端已存在且内容一致的对象（同 key、同大小、同 crc64，本地用同一算法复算比对）；被跳过文件不计入任务库。中断时未完成的大文件用 `--checkpoint` 分片断点续传（两机制互补）
+- **断线后重跑不重复上传**：`--skip-existing` 先列云端目标前缀，跳过云端已存在且内容一致的对象（同 key、同大小、同 CRC64，本地用同一算法复算比对）；TOS 的 List 响应直接带 CRC64，OSS 的 List 没有、会对命中对象并发 HEAD 补齐，取不到 CRC64 时保守重传（宁可重传不误跳过）。被跳过文件不计入任务库。中断时未完成的大文件用 `--checkpoint` 分片断点续传（两机制互补）
 - 上传/下载任务均写入 SQLite（时间、方向 up/down、本地路径、远端路径、文件/字节进度、状态 running/done/break、错误信息），便于 `aos stat` 查看；`aos cp <本地路径>` 按上传记录还原（含软链接文本文件的 symlink 还原）
 - `--no-record` 可显式跳过记录
 - Ctrl+C / 报错退出时任务标记为 `break`，正常完成标记为 `done`
@@ -208,7 +208,7 @@ go build -o aos ./cmd/aos   # version 显示 dev；要带版本号用 make build
 
 ## 传输行为说明
 
-- **软链接**：默认（不加 `--follow-links`）不读取链接目标内容，转为**同名文本文件**上传（文本内容 = readlink 原值，即链接指向的地址），并把链接明细（相对路径 / 目标地址 / 对象 key）记录到任务数据库 `task_links` 表；下载后自动还原为 symlink（普通下载按 `tos://bucket/前缀` 匹配最近的 up 任务，单参数 `aos cp <本地路径>` 按上传记录还原）；断链（readlink 成功但目标不存在）同样按文本上传。详见「软链接：要不要加 `--follow-links`？」
+- **软链接**：默认（不加 `--follow-links`）不读取链接目标内容，转为**同名文本文件**上传（文本内容 = readlink 原值，即链接指向的地址），并把链接明细（相对路径 / 目标地址 / 对象 key）记录到任务数据库 `task_links` 表；下载后自动还原为 symlink（普通下载按 `<scheme>://bucket/前缀` 匹配最近的 up 任务，单参数 `aos cp <本地路径>` 按上传记录还原）；断链（readlink 成功但目标不存在）同样按文本上传。详见「软链接：要不要加 `--follow-links`？」
 - **`--follow-links`**：软链接**溯源上传**链接目标的真实内容（key 仍用链接在项目中的相对路径）——目录链接递归展开并按 realpath 防循环、断链跳过并提示；这些溯源文件**不记录到任务数据库**（不计入 total/done/failed 统计）；**溯源链接上传失败仅提示，不中断任务**。详见「软链接：要不要加 `--follow-links`？」
 - **路径自动规范化**：`./abc//de/./f` 这类路径会自动规范为 `abc/de/f`，不会产生 `./`、`//`、`..` 段
 - 内置默认跳过 `.git/.svn/.DS_Store/.aos/__pycache__/._*/*.checkpoint/*.tmp`（跳过时会有汇总提示）
@@ -228,7 +228,7 @@ go build -o aos ./cmd/aos   # version 显示 dev；要带版本号用 make build
 -e <规则>         排除规则，逗号分隔，支持通配符（*.tmp,.git）；规则若以 - 开头请用 --exclude=规则 形式
 --checkpoint      大文件分片上传断点续传（checkpoint 存于上传根目录 .aos/checkpoints/）
 --follow-links    软链接溯源上传链接目标内容（这些文件不记录任务）
---skip-existing   跳过云端已存在且内容一致的对象（同 key、同大小、同 crc64；断线后重跑不再重复上传）
+--skip-existing   跳过云端已存在且内容一致的对象（同 key、同大小、同 CRC64；OSS 用并发 HEAD 取 CRC64；断线后重跑不再重复上传）
 
 下载:
 -f               忽略下载清单，全部重下
@@ -261,28 +261,28 @@ go build -o aos ./cmd/aos   # version 显示 dev；要带版本号用 make build
 - **不逐条打印**被删对象（避免大目录刷屏），完成后报告删除总数与分片清理数
 - 单个对象删除失败**不中断**，继续删除其余；对象删除失败或分片 abort 失败均以非零退出码退出（可重跑 `aos rm <路径> -r -f` 继续处理剩余）
 - 递归时**顺带 abort** 该前缀下未完成的分片上传任务（断点续传中断残留的孤儿分片，不占可见对象但占用存储）
-- `rm` 不写任务数据库（破坏性操作不进 `aos stat` 传输历史）；路径必须是 `tos://` 开头的云上路径
+- `rm` 不写任务数据库（破坏性操作不进 `aos stat` 传输历史）；路径必须是 `tos://` / `oss://` 开头的云上路径
 - 开启版本控制的 bucket 上，删除对象仅生成 delete marker，历史版本不会真正删除（S3 语义）
 
 ## 断点续传与完整性
 
 - **分片下载**：对 ≥5MB 的对象按分片（默认 20MB）并行 Range 下载，**默认开启断点续传**——中断后重跑会从上次进度继续，checkpoint 文件存于下载目录 `.aos/checkpoints/`（成功完成后 SDK 自动清理；`--no-checkpoint` 关闭）
-- **完整性校验**：SDK 客户端默认开启 CRC64 校验，每个分片下载完成、整文件落盘前自动校验，与云端内容指纹不一致会报错（类似 tosutil 的 `-vchecksum`，无需额外参数）
+- **完整性校验**：SDK 客户端默认开启 CRC64 校验，每个分片下载完成、整文件落盘前自动校验，与云端内容指纹不一致会报错（类似 tosutil / ossutil 的校验选项，无需额外参数）
 - **CRC 失败自愈**：若断点续传的本地状态损坏（如磁盘故障）导致 CRC64 校验失败，会自动清理残留的 checkpoint/临时文件并无 checkpoint 全量重下一次，避免反复复用损坏状态
 - **失败重试**：所有网络请求自动指数退避重试 2 次（100ms/200ms），公网/内网偶发抖动可自动恢复
 - 对象级跳过仍由 `.aos/manifest.db`（key + ETag）保证，与分片断点续传互补：manifest 管“哪些对象已完成”，checkpoint 管“单个大文件下到一半”
 
 ## 权限要求（重要）
 
-TOS 数据面操作需要账号具备对应权限。若 `check` / `ls` / `cp` 返回 **Access Denied**，请在[火山云控制台](https://console.volcengine.com)为使用的子账号授权，例如：
+TOS / OSS 数据面操作都需要账号具备对应权限。若 `check` / `ls` / `cp` 返回 **Access Denied**：
 
-- IAM 用户绑定 `TOSFullAccess` 策略（或仅授权目标 bucket 的自定义策略）
-- 或在 bucket 的桶策略（Bucket Policy）中允许该子账号的 `tos:ListBucket`、`tos:GetObject`、`tos:PutObject` 等操作
+- **火山云 TOS**：在[火山云控制台](https://console.volcengine.com)为子账号授权，例如 IAM 绑定 `TOSFullAccess`（或仅授权目标 bucket 的自定义策略），或在 bucket 桶策略（Bucket Policy）中允许 `tos:ListBucket` / `tos:GetObject` / `tos:PutObject` 等操作
+- **阿里云 OSS**：在[阿里云 RAM 控制台](https://ram.console.aliyun.com)为子账号授权，例如绑定 `AliyunOSSFullAccess`（或仅授权目标 bucket 的自定义策略），至少需要 `oss:ListObjects` / `oss:GetObject` / `oss:PutObject` / `oss:DeleteObject` / `oss:AbortMultipartUpload` / `oss:ListMultipartUploads`
 
 ## 开发
 
 ```bash
-go test ./...              # 单元测试（不访问 TOS）
+go test ./...              # 单元测试（不访问真实对象存储，用内存 fake backend）
 go build -o aos ./cmd/aos  # 编译
 make linux                 # 交叉编译 linux/amd64 与 linux/arm64
 make docs                  # 用 mkdocs-material 构建 GitHub Pages 站点到 _site/
