@@ -155,3 +155,19 @@ func TestSetSavesOnlyExplicitFields(t *testing.T) {
 		t.Fatalf("未设置的 region 不应写入:\n%s", data)
 	}
 }
+
+func TestValidateAuthRejectsUnknownProvider(t *testing.T) {
+	base := func(p string) Config {
+		return Config{Provider: p, Endpoint: "oss-cn-beijing.aliyuncs.com", AccessKey: "ak", SecretKey: "sk"}
+	}
+	for _, ok := range []string{"", "tos", "oss", "TOS", " OSS "} {
+		if err := base(ok).ValidateAuth(); err != nil {
+			t.Errorf("provider=%q 应通过校验: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"s3", "aliyun", "minio"} {
+		if err := base(bad).ValidateAuth(); err == nil {
+			t.Errorf("provider=%q 应被拒绝", bad)
+		}
+	}
+}

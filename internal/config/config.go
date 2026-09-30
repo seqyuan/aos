@@ -196,9 +196,21 @@ func (c Config) Validate() error {
 	return nil
 }
 
+// ValidateProvider 校验 provider 取值（空表示按 endpoint 自动识别）。
+// 大小写不敏感，允许 "tos"/"oss"/空。
+func (c Config) ValidateProvider() error {
+	if p := strings.ToLower(strings.TrimSpace(c.Provider)); p != "" && p != ProviderTOS && p != ProviderOSS {
+		return fmt.Errorf("provider 取值非法 %q（应为 tos 或 oss，或留空按 endpoint 自动识别）", c.Provider)
+	}
+	return nil
+}
+
 // ValidateAuth 校验连接必需字段（不要求 bucket）。
 // 显式指定 tos://bucket/... 路径时 bucket 取自路径，无需配置默认 bucket。
 func (c Config) ValidateAuth() error {
+	if err := c.ValidateProvider(); err != nil {
+		return err
+	}
 	if c.AccessKey == "" {
 		return fmt.Errorf("缺少 AccessKey（access_key）")
 	}

@@ -52,7 +52,7 @@ func (b *ossBackend) ListOnce(ctx context.Context, bucket, prefix string, maxKey
 	if err != nil {
 		return nil, err
 	}
-	out, err := bk.ListObjectsV2(oss.Prefix(prefix), oss.MaxKeys(maxKeys))
+	out, err := bk.ListObjectsV2(oss.WithContext(ctx), oss.Prefix(prefix), oss.MaxKeys(maxKeys))
 	if err != nil {
 		return nil, FriendlyError(err)
 	}
@@ -78,7 +78,7 @@ func (b *ossBackend) ListAll(ctx context.Context, bucket, prefix string) ([]Obje
 	var all []Object
 	token := ""
 	for {
-		out, err := bk.ListObjectsV2(oss.Prefix(prefix), oss.MaxKeys(1000), oss.ContinuationToken(token))
+		out, err := bk.ListObjectsV2(oss.WithContext(ctx), oss.Prefix(prefix), oss.MaxKeys(1000), oss.ContinuationToken(token))
 		if err != nil {
 			return nil, FriendlyError(err)
 		}
@@ -109,9 +109,9 @@ func (b *ossBackend) PutFile(ctx context.Context, bucket, key, localPath string,
 		return err
 	}
 	if stat.Size() < smallFileThreshold {
-		return FriendlyError(bk.PutObjectFromFile(key, localPath))
+		return FriendlyError(bk.PutObjectFromFile(key, localPath, oss.WithContext(ctx)))
 	}
-	opts := []oss.Option{oss.Routines(taskNumOrDefault(opt.TaskNum))}
+	opts := []oss.Option{oss.WithContext(ctx), oss.Routines(taskNumOrDefault(opt.TaskNum))}
 	if opt.CheckpointDir != "" {
 		opts = append(opts, oss.CheckpointDir(true, opt.CheckpointDir))
 	}
@@ -124,7 +124,7 @@ func (b *ossBackend) PutBytes(ctx context.Context, bucket, key string, data []by
 	if err != nil {
 		return err
 	}
-	return FriendlyError(bk.PutObject(key, bytes.NewReader(data)))
+	return FriendlyError(bk.PutObject(key, bytes.NewReader(data), oss.WithContext(ctx)))
 }
 
 // GetFile 下载单个对象到本地文件；size 为远端对象大小（用于选择单次/分片）。
@@ -134,9 +134,9 @@ func (b *ossBackend) GetFile(ctx context.Context, bucket, key, localPath string,
 		return err
 	}
 	if size < smallFileThreshold {
-		return FriendlyError(bk.GetObjectToFile(key, localPath))
+		return FriendlyError(bk.GetObjectToFile(key, localPath, oss.WithContext(ctx)))
 	}
-	opts := []oss.Option{oss.Routines(taskNumOrDefault(opt.TaskNum))}
+	opts := []oss.Option{oss.WithContext(ctx), oss.Routines(taskNumOrDefault(opt.TaskNum))}
 	if opt.CheckpointDir != "" {
 		opts = append(opts, oss.CheckpointDir(true, opt.CheckpointDir))
 	}
@@ -149,7 +149,7 @@ func (b *ossBackend) Stat(ctx context.Context, bucket, key string) (Object, erro
 	if err != nil {
 		return Object{}, err
 	}
-	h, err := bk.GetObjectMeta(key)
+	h, err := bk.GetObjectMeta(key, oss.WithContext(ctx))
 	if err != nil {
 		return Object{}, FriendlyError(err)
 	}
@@ -168,7 +168,7 @@ func (b *ossBackend) DeleteObject(ctx context.Context, bucket, key string) error
 	if err != nil {
 		return err
 	}
-	return FriendlyError(bk.DeleteObject(key))
+	return FriendlyError(bk.DeleteObject(key, oss.WithContext(ctx)))
 }
 
 // DeleteObjects 批量删除（单批 ≤1000）；返回删除失败的对象 key。
@@ -181,7 +181,7 @@ func (b *ossBackend) DeleteObjects(ctx context.Context, bucket string, keys []st
 	if err != nil {
 		return keys, err
 	}
-	out, err := bk.DeleteObjects(keys)
+	out, err := bk.DeleteObjects(keys, oss.WithContext(ctx))
 	if err != nil {
 		return keys, FriendlyError(err)
 	}
@@ -207,6 +207,7 @@ func (b *ossBackend) ListUploads(ctx context.Context, bucket, prefix string) ([]
 	keyMarker, uploadIDMarker := "", ""
 	for {
 		out, err := bk.ListMultipartUploads(
+			oss.WithContext(ctx),
 			oss.Prefix(prefix),
 			oss.MaxUploads(1000),
 			oss.KeyMarker(keyMarker),
@@ -237,7 +238,7 @@ func (b *ossBackend) AbortUpload(ctx context.Context, bucket, key, uploadID stri
 	}
 	return FriendlyError(bk.AbortMultipartUpload(oss.InitiateMultipartUploadResult{
 		Bucket: bucket, Key: key, UploadID: uploadID,
-	}))
+	}, oss.WithContext(ctx)))
 }
 
 func headerInt64(h http.Header, key string) int64 {

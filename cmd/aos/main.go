@@ -295,6 +295,10 @@ func cmdSet(args []string) int {
 	if b.bucket != "" {
 		cfg.Bucket = b.bucket
 	}
+	if err := cfg.ValidateProvider(); err != nil {
+		fmt.Fprintf(os.Stderr, "aos set: %v\n", err)
+		return 2
+	}
 	if err := cfg.Save(path); err != nil {
 		fmt.Fprintf(os.Stderr, "aos set: %v\n", err)
 		return 1
