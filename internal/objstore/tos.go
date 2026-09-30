@@ -2,6 +2,7 @@
 package objstore
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -119,7 +120,7 @@ func (b *tosBackend) PutFile(ctx context.Context, bucket, key, localPath string,
 func (b *tosBackend) PutBytes(ctx context.Context, bucket, key string, data []byte) error {
 	_, err := b.client.PutObjectV2(ctx, &tos.PutObjectV2Input{
 		PutObjectBasicInput: tos.PutObjectBasicInput{Bucket: bucket, Key: key},
-		Content:             strings.NewReader(string(data)),
+		Content:             bytes.NewReader(data),
 	})
 	return FriendlyError(err)
 }

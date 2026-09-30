@@ -31,19 +31,11 @@ const (
 // Config 对象存储连接配置（支持火山云 TOS / 阿里云 OSS）。
 type Config struct {
 	Provider  string `json:"provider,omitempty"` // 后端：tos（默认）| oss；留空按 endpoint 自动识别
-	Endpoint  string `json:"endpoint"`           // 例如 tos-cn-beijing.volces.com / oss-cn-beijing.aliyuncs.com
-	Region    string `json:"region"`             // 例如 cn-beijing
-	Bucket    string `json:"bucket"`             // 例如 example-bucket
+	Endpoint  string `json:"endpoint,omitempty"` // 例如 tos-cn-beijing.volces.com / oss-cn-beijing.aliyuncs.com
+	Region    string `json:"region,omitempty"`   // 例如 cn-beijing
+	Bucket    string `json:"bucket,omitempty"`   // 例如 example-bucket
 	AccessKey string `json:"access_key_id"`      // Access Key ID
 	SecretKey string `json:"secret_access_key"`  // Secret Access Key
-}
-
-// Default 返回带默认值的配置。
-func Default() Config {
-	return Config{
-		Endpoint: DefaultEndpoint,
-		Region:   DefaultRegion,
-	}
 }
 
 // ProviderOrDefault 返回有效后端：显式配置优先，其次按 endpoint 自动识别，缺省 tos。
@@ -124,10 +116,11 @@ func ResolvePath(override string) (string, error) {
 	return tried[0], nil
 }
 
-// Load 从指定路径加载配置；文件不存在时返回带默认值的空配置。
-// 同时允许用环境变量 AOS_* 覆盖任意字段（便于 CI 使用）。
+// Load 从指定路径加载配置；文件不存在时返回零值配置（不 seed 默认值，
+// 避免把 TOS 默认 endpoint/region 固化进用户配置文件；运行时兜底由
+// EndpointOrDefault / ProviderOrDefault 负责）。同时允许用环境变量 AOS_* 覆盖任意字段（便于 CI 使用）。
 func Load(path string) (Config, error) {
-	cfg := Default()
+	cfg := Config{}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -139,14 +132,14 @@ func Load(path string) (Config, error) {
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return cfg, fmt.Errorf("解析配置文件 %s 失败: %w", path, err)
 	}
-	if cfg.Region == "" {
-		cfg.Region = DefaultRegion
-	}
 	applyEnvOverrides(&cfg)
 	return cfg, nil
 }
 
 func applyEnvOverrides(cfg *Config) {
+	if v := os.Getenv("AOS_PROVIDER"); v != "" {
+		cfg.Provider = v
+	}
 	if v := os.Getenv("AOS_ENDPOINT"); v != "" {
 		cfg.Endpoint = v
 	}

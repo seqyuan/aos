@@ -204,6 +204,11 @@ func Upload(ctx context.Context, be Backend, cfg config.Config, opt UploadOption
 		mu.Unlock()
 	}
 	cancelled := func() bool {
+		// ctx 取消（Ctrl+C/超时）也要响应：OSS SDK 的分片上传 part 请求不支持 context，
+		// 在途请求需等 SDK 超时，但后续文件应立即跳过
+		if ctx.Err() != nil {
+			return true
+		}
 		mu.Lock()
 		defer mu.Unlock()
 		return firstErr != nil

@@ -185,6 +185,10 @@ func Download(ctx context.Context, be Backend, cfg config.Config, opt DownloadOp
 		mu.Unlock()
 	}
 	cancelled := func() bool {
+		// 同 Upload：ctx 取消（Ctrl+C/超时）也要响应，剩余文件立即跳过
+		if ctx.Err() != nil {
+			return true
+		}
 		mu.Lock()
 		defer mu.Unlock()
 		return firstErr != nil

@@ -193,6 +193,10 @@ func rmExecute(ctx context.Context, ops rmOps, bucket, prefix string, opt RMOpti
 	// 清理未完成分片上传（失败不中断，仅计数）
 	aborted, abortFailed := 0, 0
 	for _, up := range uploads {
+		if ctx.Err() != nil {
+			// Ctrl+C/超时：剩余分片任务不再清理，报告已处理部分
+			break
+		}
 		if err := ops.abortUpload(ctx, bucket, up.Key, up.UploadID); err != nil {
 			abortFailed++
 			continue

@@ -121,7 +121,8 @@ go build -o aos ./cmd/aos   # version 显示 dev；要带版本号用 make build
   - OSS 默认走 **https**；若内网 endpoint 只能 http，请显式写成 `http://oss-cn-beijing-internal.aliyuncs.com`
 - **OSS 的 region 可留空**（OSS 签名不依赖 region，endpoint 已含区域）。
 - 修改/写入配置：`./aos set --ak ... --sk ... [--provider oss] [--endpoint ...] [--region ...] [--bucket ...] [-c 配置文件]`（查看配置请直接编辑/查看 `aos.json`）
-- 可用环境变量覆盖（便于 CI）：`AOS_AK` / `AOS_SK` / `AOS_ENDPOINT` / `AOS_REGION` / `AOS_BUCKET`，或 `AOS_CONFIG` 指定配置文件路径
+- 可用环境变量覆盖（便于 CI）：`AOS_PROVIDER` / `AOS_AK` / `AOS_SK` / `AOS_ENDPOINT` / `AOS_REGION` / `AOS_BUCKET`，或 `AOS_CONFIG` 指定配置文件路径
+- `aos set` 只写入显式指定的字段，不写入未设置的 endpoint/region/bucket（运行时自动兜底）
 - 单次命令覆盖：`-c` / `--config`（配置文件）与 `--provider` / `--endpoint` / `--region` / `--bucket` 参数
 
 ## 路径规则
