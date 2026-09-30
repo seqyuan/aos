@@ -1,11 +1,9 @@
-package tosx
+package objstore
 
 import (
 	"context"
 	"errors"
 	"testing"
-
-	"github.com/volcengine/ve-tos-golang-sdk/v2/tos"
 )
 
 func TestResolvePathSourceUsesPathBucketNotConfig(t *testing.T) {
@@ -48,7 +46,7 @@ func TestResolvePathSourceEmptyPrefix(t *testing.T) {
 }
 
 func TestCollectFilesFiltersDirPlaceholders(t *testing.T) {
-	objs := []tos.ListedObjectV2{
+	objs := []Object{
 		{Key: "a/", Size: 0},
 		{Key: "a/f.txt", Size: 3},
 		{Key: "empty.txt", Size: 0},
@@ -65,8 +63,8 @@ func TestCollectFilesFiltersDirPlaceholders(t *testing.T) {
 }
 
 func TestResolveDownloadSourceDirectoryMode(t *testing.T) {
-	list := func(ctx context.Context, bucket, prefix string) ([]tos.ListedObjectV2, error) {
-		return []tos.ListedObjectV2{{Key: "C/SPI/dataset/a.txt", Size: 3}}, nil
+	list := func(ctx context.Context, bucket, prefix string) ([]Object, error) {
+		return []Object{{Key: "C/SPI/dataset/a.txt", Size: 3}}, nil
 	}
 	files, prefix, single, err := resolveDownloadSource(context.Background(), list, "b", "C/SPI/dataset/")
 	if err != nil {
@@ -86,12 +84,12 @@ func TestResolveDownloadSourceDirectoryMode(t *testing.T) {
 // B1/B2 回归：单文件上传时对象 key 不带尾斜杠，
 // 下载侧必须能从“精确对象 key”回退到单文件模式，否则永远列不到。
 func TestResolveDownloadSourceFallsBackToExactKey(t *testing.T) {
-	list := func(ctx context.Context, bucket, prefix string) ([]tos.ListedObjectV2, error) {
+	list := func(ctx context.Context, bucket, prefix string) ([]Object, error) {
 		switch prefix {
 		case "C/SPI/dataset/":
-			return []tos.ListedObjectV2{{Key: "C/SPI/dataset/", Size: 0}}, nil // 仅目录占位
+			return []Object{{Key: "C/SPI/dataset/", Size: 0}}, nil // 仅目录占位
 		case "C/SPI/dataset":
-			return []tos.ListedObjectV2{{Key: "C/SPI/dataset", ETag: `"abc"`, Size: 4}}, nil
+			return []Object{{Key: "C/SPI/dataset", ETag: `"abc"`, Size: 4}}, nil
 		}
 		return nil, nil
 	}
@@ -111,7 +109,7 @@ func TestResolveDownloadSourceFallsBackToExactKey(t *testing.T) {
 }
 
 func TestResolveDownloadSourceExactListErrorIgnored(t *testing.T) {
-	list := func(ctx context.Context, bucket, prefix string) ([]tos.ListedObjectV2, error) {
+	list := func(ctx context.Context, bucket, prefix string) ([]Object, error) {
 		if prefix == "C/SPI/dataset" {
 			return nil, errors.New("boom")
 		}

@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/seqyuan/aos/internal/db"
-	"github.com/seqyuan/aos/internal/tosx"
+	"github.com/seqyuan/aos/internal/objstore"
 	"github.com/spf13/pflag"
 )
 
@@ -52,7 +52,7 @@ func cmdCP(args []string) int {
 		fmt.Fprintln(os.Stderr, "aos cp: 最多 2 个位置参数（<源> [<目标>]）")
 		return 2
 	}
-	isTOS := isTOSPath
+	isCloud := isCloudPath
 
 	// ---- 方向判定 ----
 	var src string
@@ -64,24 +64,24 @@ func cmdCP(args []string) int {
 	case len(pos) == 2:
 		src = pos[0]
 		switch {
-		case !isTOS(pos[0]) && isTOS(pos[1]):
+		case !isCloud(pos[0]) && isCloud(pos[1]):
 			upload = true
-		case isTOS(pos[0]) && !isTOS(pos[1]):
+		case isCloud(pos[0]) && !isCloud(pos[1]):
 			// 下载：落到下方下载分支
-		case isTOS(pos[0]) && isTOS(pos[1]):
-			fmt.Fprintln(os.Stderr, "aos cp: 云端拷贝（tos:// → tos://）暂不支持，将在后续版本提供")
+		case isCloud(pos[0]) && isCloud(pos[1]):
+			fmt.Fprintln(os.Stderr, "aos cp: 云端拷贝（云路径 → 云路径）暂不支持，将在后续版本提供")
 			return 2
 		default:
-			fmt.Fprintln(os.Stderr, "aos cp: 本地到本地拷贝不支持；云上路径需以 tos:// 开头")
+			fmt.Fprintln(os.Stderr, "aos cp: 本地到本地拷贝不支持；云上路径需以 tos:// 或 oss:// 开头")
 			return 2
 		}
 	case len(pos) == 1:
 		src = pos[0]
-		if !isTOS(src) {
+		if !isCloud(src) {
 			// 单参数本地路径：按上传记录还原下载（未上传过会提示）
 			lookupDB = true
 		}
-		// 单参数 tos:// 路径：下载到当前目录
+		// 单参数云路径：下载到当前目录
 	default: // 零位置参数
 		fmt.Fprintln(os.Stderr, "aos cp: 缺少参数。用法: aos cp <源> [<目标>]（如 aos cp ./dataset tos://bucket/前缀）")
 		fs.Usage()
@@ -91,7 +91,7 @@ func cmdCP(args []string) int {
 	// 分片大小解析
 	var partSizeVal int64
 	if *partSize != "" {
-		v, err := tosx.ParsePartSize(*partSize)
+		v, err := objstore.ParsePartSize(*partSize)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "aos cp: %v\n", err)
 			return 2
@@ -104,7 +104,7 @@ func cmdCP(args []string) int {
 		fmt.Fprintf(os.Stderr, "aos cp: %v\n", err)
 		return 1
 	}
-	// 云上路径均为显式 tos://（可省略 bucket），连接必需字段为 AK/SK/endpoint
+	// 云上路径均为显式 scheme://（可省略 bucket），连接必需字段为 AK/SK/endpoint
 	if err := cfg.ValidateAuth(); err != nil {
 		fmt.Fprintf(os.Stderr, "aos cp: %v\n（运行 aos config set 配置凭据）\n", err)
 		return 1
@@ -118,7 +118,7 @@ func cmdCP(args []string) int {
 	ctx, cancel = context.WithTimeout(ctx, dur)
 	defer cancel()
 
-	client, err := tosx.NewClient(cfg)
+	client, err := objstore.NewClient(cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "aos cp: %v\n", err)
 		return 1
@@ -126,7 +126,7 @@ func cmdCP(args []string) int {
 
 	if upload {
 		// 解析目标前缀（bucket 缺省时用配置默认）
-		tp, err := tosx.ParseTOSPath(pos[1], cfg.Bucket)
+		tp, err := objstore.ParseCloudPath(pos[1], cfg.Bucket)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "aos cp: %v\n", err)
 			return 2
@@ -139,7 +139,7 @@ func cmdCP(args []string) int {
 				}
 			}
 		}
-		opt := tosx.UploadOptions{
+		opt := objstore.UploadOptions{
 			Bucket:       tp.Bucket,
 			TargetPrefix: tp.Prefix,
 			LocalPath:    pos[0],
@@ -163,7 +163,7 @@ func cmdCP(args []string) int {
 			defer rec.close()
 			opt.Recorder = rec
 		}
-		if err := tosx.Upload(ctx, client, cfg, opt, os.Stdout); err != nil {
+		if err := objstore.Upload(ctx, client, cfg, opt, os.Stdout); err != nil {
 			fmt.Fprintf(os.Stderr, "aos cp: %v\n", err)
 			return 1
 		}
@@ -202,7 +202,7 @@ func cmdCP(args []string) int {
 		localFile = src // 单文件任务时精确落盘回上传时的文件路径
 	}
 
-	opt := tosx.DownloadOptions{
+	opt := objstore.DownloadOptions{
 		Path:        tosPath,
 		LocalDir:    localDir,
 		LocalFile:   localFile,
@@ -225,14 +225,14 @@ func cmdCP(args []string) int {
 		defer rec.close()
 		opt.Recorder = rec
 	}
-	if err := tosx.Download(ctx, client, cfg, opt, os.Stdout); err != nil {
+	if err := objstore.Download(ctx, client, cfg, opt, os.Stdout); err != nil {
 		fmt.Fprintf(os.Stderr, "aos cp: %v\n", err)
 		return 1
 	}
 	// 下载完成后还原软链接：
 	// 1) 单参数本地路径还原：直接用已查到的 up 任务；
 	// 2) 普通下载：按远端前缀匹配最近的 up 任务。
-	if err := restoreLinksAfterDownload(*dbPath, restoreDB, restoreTask, lookupDB, tosPath, localDir, cfg.Bucket); err != nil {
+	if err := restoreLinksAfterDownload(*dbPath, restoreDB, restoreTask, lookupDB, tosPath, localDir, cfg.Bucket, cfg.Scheme()); err != nil {
 		fmt.Fprintf(os.Stderr, "aos cp: 还原软链接失败: %v\n", err)
 		return 1
 	}
@@ -241,20 +241,20 @@ func cmdCP(args []string) int {
 
 // restoreLinksAfterDownload 下载完成后按上传记录的软链接明细还原 symlink。
 // lookupDB：直接用已查到的 up 任务；普通下载：按远端前缀匹配最近的 up 任务。
-func restoreLinksAfterDownload(dbPath string, restoreDB *db.DB, restoreTask db.Task, lookupDB bool, tosPath, localDir, defaultBucket string) error {
+func restoreLinksAfterDownload(dbPath string, restoreDB *db.DB, restoreTask db.Task, lookupDB bool, tosPath, localDir, defaultBucket, scheme string) error {
 	if lookupDB {
 		if restoreDB == nil {
 			return nil
 		}
 		return restoreSymlinks(restoreDB, restoreTask.ID, localDir)
 	}
-	// 普通下载：解析远端前缀（tos://bucket/prefix），匹配最近的 up 任务
-	tp, err := tosx.ParseTOSPath(tosPath, defaultBucket)
+	// 普通下载：解析远端前缀（<scheme>://bucket/prefix），匹配最近的 up 任务
+	tp, err := objstore.ParseCloudPath(tosPath, defaultBucket)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "aos cp: 跳过还原软链接（无法解析远端路径）: %v\n", err)
 		return nil
 	}
-	remotePrefix := "tos://" + tp.Bucket + "/" + strings.TrimSuffix(tp.Prefix, "/")
+	remotePrefix := scheme + "://" + tp.Bucket + "/" + strings.TrimSuffix(tp.Prefix, "/")
 	database, err := openDB(dbPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "aos cp: 跳过还原软链接（无法打开任务库）: %v\n", err)
@@ -286,13 +286,13 @@ func openDB(flagPath string) (*db.DB, error) {
 	return db.Open(resolveDBPath(flagPath))
 }
 
-// uploadRecorder 包装 db.Recorder 并适配 tosx.UploadRecorder。
+// uploadRecorder 包装 db.Recorder 并适配 objstore.UploadRecorder。
 type uploadRecorder struct {
 	database *db.DB
 	rec      *db.Recorder
 }
 
-func newUploadRecorder(path string, opt tosx.UploadOptions) (*uploadRecorder, error) {
+func newUploadRecorder(path string, opt objstore.UploadOptions) (*uploadRecorder, error) {
 	database, err := db.Open(path)
 	if err != nil {
 		return nil, err
@@ -319,7 +319,7 @@ func (u *uploadRecorder) OnTaskBegin(remotePrefix string, totalFiles int, totalB
 	return u.rec.Begin(remotePrefix, int64(totalFiles), totalBytes)
 }
 
-func (u *uploadRecorder) OnLinks(taskID int64, links []tosx.UploadLink) error {
+func (u *uploadRecorder) OnLinks(taskID int64, links []objstore.UploadLink) error {
 	dl := make([]db.Link, 0, len(links))
 	for _, l := range links {
 		dl = append(dl, db.Link{Rel: l.Rel, Target: l.Target, ObjectKey: l.ObjectKey, Size: l.Size})
@@ -399,7 +399,7 @@ func restoreSymlinks(database *db.DB, taskID int64, localDir string) error {
 	for _, l := range links {
 		target := localDir
 		if l.Rel != "" {
-			joined, err := tosx.SafeJoin(localDir, l.Rel)
+			joined, err := objstore.SafeJoin(localDir, l.Rel)
 			if err != nil {
 				return fmt.Errorf("软链接路径不安全 %q: %w", l.Rel, err)
 			}
@@ -416,9 +416,9 @@ func restoreSymlinks(database *db.DB, taskID int64, localDir string) error {
 	return nil
 }
 
-// isTOSPath 判断是否为云上路径。必须是 tos:// 前缀，拒绝 http://、s3:// 等。
-func isTOSPath(s string) bool {
-	return strings.HasPrefix(s, "tos://")
+// isCloudPath 判断是否为云上路径（tos:// / oss:// / s3://）。
+func isCloudPath(s string) bool {
+	return objstore.IsCloudPath(s)
 }
 
 // replaceWithSymlink 把 path 替换为指向 linkTarget 的 symlink。

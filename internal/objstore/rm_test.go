@@ -1,4 +1,4 @@
-package tosx
+package objstore
 
 import (
 	"bytes"
@@ -6,15 +6,13 @@ import (
 	"fmt"
 	"strings"
 	"testing"
-
-	"github.com/volcengine/ve-tos-golang-sdk/v2/tos"
 )
 
 // fakeOps 构造注入的存储操作，记录调用以便断言。
 func fakeOps() (rmOps, *fakeRMState) {
 	st := &fakeRMState{}
 	return rmOps{
-		listObjects: func(_ context.Context, bucket, prefix string) ([]tos.ListedObjectV2, error) {
+		listObjects: func(_ context.Context, bucket, prefix string) ([]Object, error) {
 			return st.listObjects, st.listErr
 		},
 		deleteOne: func(_ context.Context, bucket, key string) error {
@@ -25,7 +23,7 @@ func fakeOps() (rmOps, *fakeRMState) {
 			st.batchCalls = append(st.batchCalls, append([]string{}, keys...))
 			return st.failedKeys
 		},
-		listUploads: func(_ context.Context, bucket, prefix string) ([]tos.ListedUpload, error) {
+		listUploads: func(_ context.Context, bucket, prefix string) ([]MultipartUpload, error) {
 			return st.uploads, st.uploadsErr
 		},
 		abortUpload: func(_ context.Context, bucket, key, uploadID string) error {
@@ -36,12 +34,12 @@ func fakeOps() (rmOps, *fakeRMState) {
 }
 
 type fakeRMState struct {
-	listObjects  []tos.ListedObjectV2
+	listObjects  []Object
 	listErr      error
 	deleteOneErr error
 	failedKeys   []string
 	batchCalls   [][]string
-	uploads      []tos.ListedUpload
+	uploads      []MultipartUpload
 	uploadsErr   error
 	abortErr     error
 	aborted      []string
@@ -74,8 +72,8 @@ func TestRMDeleteSingleObjectRequiresKey(t *testing.T) {
 
 func TestRMRecursiveConfirmRejected(t *testing.T) {
 	ops, st := fakeOps()
-	st.listObjects = []tos.ListedObjectV2{{Key: "d/a.txt", Size: 1}, {Key: "d/b.txt", Size: 2}}
-	st.uploads = []tos.ListedUpload{{Key: "d/big.bin", UploadID: "u1"}}
+	st.listObjects = []Object{{Key: "d/a.txt", Size: 1}, {Key: "d/b.txt", Size: 2}}
+	st.uploads = []MultipartUpload{{Key: "d/big.bin", UploadID: "u1"}}
 	var buf bytes.Buffer
 	confirmed := false
 	res, err := rmExecute(context.Background(), ops, "b", "d/", RMOptions{
@@ -100,8 +98,8 @@ func TestRMRecursiveConfirmRejected(t *testing.T) {
 
 func TestRMRecursiveConfirmAccepted(t *testing.T) {
 	ops, st := fakeOps()
-	st.listObjects = []tos.ListedObjectV2{{Key: "d/a.txt", Size: 1}, {Key: "d/b.txt", Size: 2}}
-	st.uploads = []tos.ListedUpload{{Key: "d/big.bin", UploadID: "u1"}, {Key: "d/big2.bin", UploadID: "u2"}}
+	st.listObjects = []Object{{Key: "d/a.txt", Size: 1}, {Key: "d/b.txt", Size: 2}}
+	st.uploads = []MultipartUpload{{Key: "d/big.bin", UploadID: "u1"}, {Key: "d/big2.bin", UploadID: "u2"}}
 	var buf bytes.Buffer
 	res, err := rmExecute(context.Background(), ops, "b", "d/", RMOptions{
 		Recursive: true,
@@ -126,7 +124,7 @@ func TestRMRecursiveConfirmAccepted(t *testing.T) {
 
 func TestRMRecursiveForceSkipsConfirm(t *testing.T) {
 	ops, st := fakeOps()
-	st.listObjects = []tos.ListedObjectV2{{Key: "d/a.txt", Size: 1}}
+	st.listObjects = []Object{{Key: "d/a.txt", Size: 1}}
 	confirmCalled := false
 	var buf bytes.Buffer
 	res, err := rmExecute(context.Background(), ops, "b", "d/", RMOptions{
@@ -150,7 +148,7 @@ func TestRMRecursiveForceSkipsConfirm(t *testing.T) {
 
 func TestRMRecursivePartialFailure(t *testing.T) {
 	ops, st := fakeOps()
-	st.listObjects = []tos.ListedObjectV2{{Key: "d/a.txt", Size: 1}, {Key: "d/b.txt", Size: 2}}
+	st.listObjects = []Object{{Key: "d/a.txt", Size: 1}, {Key: "d/b.txt", Size: 2}}
 	st.failedKeys = []string{"d/b.txt"} // b.txt 删除失败
 	var buf bytes.Buffer
 	res, err := rmExecute(context.Background(), ops, "b", "d/", RMOptions{
@@ -170,7 +168,7 @@ func TestRMRecursivePartialFailure(t *testing.T) {
 
 func TestRMRecursiveEmptyPrefix(t *testing.T) {
 	ops, st := fakeOps()
-	st.listObjects = []tos.ListedObjectV2{} // 空
+	st.listObjects = []Object{} // 空
 	var buf bytes.Buffer
 	res, err := rmExecute(context.Background(), ops, "b", "empty/", RMOptions{
 		Recursive: true,
@@ -186,7 +184,7 @@ func TestRMRecursiveEmptyPrefix(t *testing.T) {
 
 func TestRMRecursiveSkipsDirPlaceholder(t *testing.T) {
 	ops, st := fakeOps()
-	st.listObjects = []tos.ListedObjectV2{{Key: "d/", Size: 0}, {Key: "d/a.txt", Size: 1}}
+	st.listObjects = []Object{{Key: "d/", Size: 0}, {Key: "d/a.txt", Size: 1}}
 	var buf bytes.Buffer
 	res, err := rmExecute(context.Background(), ops, "b", "d/", RMOptions{
 		Recursive: true,
@@ -203,7 +201,7 @@ func TestRMRecursiveSkipsDirPlaceholder(t *testing.T) {
 
 func TestRMRecursiveWholeBucketWarns(t *testing.T) {
 	ops, st := fakeOps()
-	st.listObjects = []tos.ListedObjectV2{{Key: "a.txt", Size: 1}, {Key: "b.txt", Size: 2}}
+	st.listObjects = []Object{{Key: "a.txt", Size: 1}, {Key: "b.txt", Size: 2}}
 	var buf bytes.Buffer
 	res, err := rmExecute(context.Background(), ops, "b", "", RMOptions{
 		Recursive: true,
@@ -223,7 +221,7 @@ func TestRMRecursiveWholeBucketWarns(t *testing.T) {
 
 func TestRMRecursiveWholeBucketConfirmPrompt(t *testing.T) {
 	ops, st := fakeOps()
-	st.listObjects = []tos.ListedObjectV2{{Key: "a.txt", Size: 1}}
+	st.listObjects = []Object{{Key: "a.txt", Size: 1}}
 	var buf bytes.Buffer
 	var prompt string
 	_, err := rmExecute(context.Background(), ops, "b", "", RMOptions{
@@ -243,8 +241,8 @@ func TestRMRecursiveWholeBucketConfirmPrompt(t *testing.T) {
 
 func TestRMAbortFailureReturnsError(t *testing.T) {
 	ops, st := fakeOps()
-	st.listObjects = []tos.ListedObjectV2{{Key: "d/a.txt", Size: 1}}
-	st.uploads = []tos.ListedUpload{{Key: "d/big.bin", UploadID: "u1"}}
+	st.listObjects = []Object{{Key: "d/a.txt", Size: 1}}
+	st.uploads = []MultipartUpload{{Key: "d/big.bin", UploadID: "u1"}}
 	st.abortErr = fmt.Errorf("abort failed")
 	var buf bytes.Buffer
 	res, err := rmExecute(context.Background(), ops, "b", "d/", RMOptions{

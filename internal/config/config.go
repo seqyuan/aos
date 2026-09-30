@@ -22,13 +22,20 @@ const (
 	DefaultRegion   = "cn-beijing"
 )
 
-// Config 对象存储连接配置（当前后端为火山云 TOS）。
+// 支持的对象存储后端。
+const (
+	ProviderTOS = "tos" // 火山云 TOS
+	ProviderOSS = "oss" // 阿里云 OSS
+)
+
+// Config 对象存储连接配置（支持火山云 TOS / 阿里云 OSS）。
 type Config struct {
-	Endpoint  string `json:"endpoint"`          // 例如 tos-cn-beijing.volces.com
-	Region    string `json:"region"`            // 例如 cn-beijing
-	Bucket    string `json:"bucket"`            // 例如 example-bucket
-	AccessKey string `json:"access_key_id"`     // Access Key ID
-	SecretKey string `json:"secret_access_key"` // Secret Access Key
+	Provider  string `json:"provider,omitempty"` // 后端：tos（默认）| oss；留空按 endpoint 自动识别
+	Endpoint  string `json:"endpoint"`           // 例如 tos-cn-beijing.volces.com / oss-cn-beijing.aliyuncs.com
+	Region    string `json:"region"`             // 例如 cn-beijing
+	Bucket    string `json:"bucket"`             // 例如 example-bucket
+	AccessKey string `json:"access_key_id"`      // Access Key ID
+	SecretKey string `json:"secret_access_key"`  // Secret Access Key
 }
 
 // Default 返回带默认值的配置。
@@ -39,13 +46,41 @@ func Default() Config {
 	}
 }
 
+// ProviderOrDefault 返回有效后端：显式配置优先，其次按 endpoint 自动识别，缺省 tos。
+// 识别规则：endpoint 含 aliyuncs.com → oss；含 volces.com/ivolces.com → tos。
+func (c Config) ProviderOrDefault() string {
+	switch strings.ToLower(strings.TrimSpace(c.Provider)) {
+	case ProviderTOS:
+		return ProviderTOS
+	case ProviderOSS:
+		return ProviderOSS
+	}
+	ep := strings.ToLower(c.Endpoint)
+	switch {
+	case strings.Contains(ep, "aliyuncs.com"):
+		return ProviderOSS
+	case strings.Contains(ep, "volces.com"):
+		return ProviderTOS
+	}
+	return ProviderTOS
+}
+
+// Scheme 返回云路径 scheme（与后端同名），用于路径显示与任务库远端前缀。
+func (c Config) Scheme() string {
+	return c.ProviderOrDefault()
+}
+
 // EndpointOrDefault 返回有效 endpoint：配置了就用配置的，否则由 region 推导。
-// 推导规则：https://tos-<region>.volces.com（内网可手动配 tos-cn-beijing.ivolces.com）。
+// 推导规则：TOS → https://tos-<region>.volces.com（内网可手动配 tos-cn-beijing.ivolces.com）；
+// OSS → https://oss-<region>.aliyuncs.com（内网可手动配 oss-<region>-internal.aliyuncs.com）。
 func (c Config) EndpointOrDefault() string {
 	if c.Endpoint != "" {
 		return strings.TrimSuffix(strings.TrimPrefix(c.Endpoint, "https://"), "/")
 	}
 	if c.Region != "" {
+		if c.ProviderOrDefault() == ProviderOSS {
+			return "oss-" + c.Region + ".aliyuncs.com"
+		}
 		return "tos-" + c.Region + ".volces.com"
 	}
 	return DefaultEndpoint

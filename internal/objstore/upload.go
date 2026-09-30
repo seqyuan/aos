@@ -1,4 +1,4 @@
-package tosx
+package objstore
 
 import (
 	"context"
@@ -14,7 +14,6 @@ import (
 	"github.com/seqyuan/aos/internal/config"
 	"github.com/seqyuan/aos/internal/human"
 	"github.com/seqyuan/aos/internal/ui"
-	"github.com/volcengine/ve-tos-golang-sdk/v2/tos"
 )
 
 // UploadOptions 上传选项（aos cp <本地> tos://<bucket>/<前缀>）。
@@ -52,7 +51,8 @@ type UploadRecorder interface {
 }
 
 // Upload 执行上传。
-func Upload(ctx context.Context, client *tos.ClientV2, cfg config.Config, opt UploadOptions, w io.Writer) error {
+func Upload(ctx context.Context, be Backend, cfg config.Config, opt UploadOptions, w io.Writer) error {
+	scheme := cfg.Scheme()
 	// 1. 解析本地路径（用 Lstat 识别软链接，不解析其目标）
 	localPath := filepath.Clean(opt.LocalPath)
 
@@ -85,11 +85,17 @@ func Upload(ctx context.Context, client *tos.ClientV2, cfg config.Config, opt Up
 	bucket := uploadDestBucket(opt, cfg)
 	skippedExisting := 0
 	if opt.SkipExisting {
-		cloud, err := listCloudFingerprints(ctx, client, bucket, basePrefix)
+		cloud, err := listCloudFingerprints(ctx, be, bucket, basePrefix)
 		if err != nil {
 			return fmt.Errorf("列出目标前缀以判断已存在文件失败（可去掉 --skip-existing 后重试）: %w", err)
 		}
-		jobs, skippedExisting = filterExistingJobs(jobs, cloud)
+		jobs, skippedExisting = filterExistingJobs(ctx, jobs, cloud, func(c context.Context, key string) (cloudFingerprint, error) {
+			o, err := be.Stat(c, bucket, key)
+			if err != nil {
+				return cloudFingerprint{}, err
+			}
+			return cloudFingerprint{size: o.Size, crc64: o.CRC64}, nil
+		})
 		if len(jobs) == 0 {
 			printLinkSkipSummary(w, collected)
 			fmt.Fprintf(w, "全部 %d 个文件已在云端且内容一致，无需上传 ✅（--skip-existing）\n", skippedExisting)
@@ -122,7 +128,7 @@ func Upload(ctx context.Context, client *tos.ClientV2, cfg config.Config, opt Up
 
 	// 5.5 任务记录：开始 + 软链接明细（只记录默认模式的普通文件与转文本的软链接）
 	// 远端前缀记录完整 tos://bucket/前缀，便于下载侧按前缀匹配 up 任务还原软链接
-	remotePrefix := uploadRemotePrefix(bucket, basePrefix)
+	remotePrefix := uploadRemotePrefix(scheme, bucket, basePrefix)
 	taskID := int64(0)
 	var recorder UploadRecorder = opt.Recorder
 	if recorder != nil {
@@ -155,8 +161,8 @@ func Upload(ctx context.Context, client *tos.ClientV2, cfg config.Config, opt Up
 	}
 
 	// 6. 打印计划
-	fmt.Fprintf(w, "上传 %d 个文件（共 %s）到 tos://%s/%s\n",
-		totalFiles, human.Size(totalBytes), bucket, basePrefix)
+	fmt.Fprintf(w, "上传 %d 个文件（共 %s）到 %s://%s/%s\n",
+		totalFiles, human.Size(totalBytes), scheme, bucket, basePrefix)
 	if skippedExisting > 0 {
 		fmt.Fprintf(w, "跳过 %d 个已在云端且内容一致的文件（--skip-existing）\n", skippedExisting)
 	}
@@ -234,7 +240,7 @@ func Upload(ctx context.Context, client *tos.ClientV2, cfg config.Config, opt Up
 						countFollow(0, 0, 1, 0)
 						continue
 					}
-					err := UploadOne(ctx, client, bucket, j.key, j.local, opt.Checkpoint, checkpointDir, opt.PartSize, opt.TaskNum)
+					err := be.PutFile(ctx, bucket, j.key, j.local, fileTransferOpt(opt.Checkpoint, checkpointDir, opt.PartSize, opt.TaskNum))
 					if err != nil {
 						countFollow(0, 1, 0, 0)
 						followMu.Lock()
@@ -254,9 +260,9 @@ func Upload(ctx context.Context, client *tos.ClientV2, cfg config.Config, opt Up
 				var err error
 				if j.linkTarget != "" {
 					// 默认模式：软链接转为同名文本文件上传（内容为 readlink 原值）
-					err = UploadText(ctx, client, bucket, j.key, j.linkTarget)
+					err = be.PutBytes(ctx, bucket, j.key, []byte(j.linkTarget))
 				} else {
-					err = UploadOne(ctx, client, bucket, j.key, j.local, opt.Checkpoint, checkpointDir, opt.PartSize, opt.TaskNum)
+					err = be.PutFile(ctx, bucket, j.key, j.local, fileTransferOpt(opt.Checkpoint, checkpointDir, opt.PartSize, opt.TaskNum))
 				}
 				if err != nil {
 					reportErr(err)
@@ -388,12 +394,21 @@ func uploadDestBucket(opt UploadOptions, cfg config.Config) string {
 	return cfg.Bucket
 }
 
-// uploadRemotePrefix 把桶与对象前缀拼成任务库里的 tos://bucket/前缀；桶为空时退回裸前缀。
-func uploadRemotePrefix(bucket, basePrefix string) string {
+// uploadRemotePrefix 把桶与对象前缀拼成任务库里的 <scheme>://bucket/前缀；桶为空时退回裸前缀。
+func uploadRemotePrefix(scheme, bucket, basePrefix string) string {
 	if bucket == "" {
 		return basePrefix
 	}
-	return "tos://" + bucket + "/" + basePrefix
+	return scheme + "://" + bucket + "/" + basePrefix
+}
+
+// fileTransferOpt 组装分片传输参数：checkpoint 关闭时 CheckpointDir 置空。
+func fileTransferOpt(checkpoint bool, checkpointDir string, partSize int64, taskNum int) TransferOpt {
+	opt := TransferOpt{PartSize: partSize, TaskNum: taskNum}
+	if checkpoint {
+		opt.CheckpointDir = checkpointDir
+	}
+	return opt
 }
 
 // cloudFingerprint 云端对象指纹（来自 List 响应：TOS 服务端对每个对象计算 crc64）。
@@ -403,21 +418,24 @@ type cloudFingerprint struct {
 }
 
 // listCloudFingerprints 列出 bucket 下 basePrefix 前缀所有对象 → key → {size, crc64}。
-func listCloudFingerprints(ctx context.Context, client *tos.ClientV2, bucket, basePrefix string) (map[string]cloudFingerprint, error) {
-	objs, err := ListAll(ctx, client, bucket, basePrefix)
+// 注：OSS 的 List 不含 crc64，此时 crc64 为 0，由 filterExistingJobs 按需 Stat 补齐。
+func listCloudFingerprints(ctx context.Context, be Backend, bucket, basePrefix string) (map[string]cloudFingerprint, error) {
+	objs, err := be.ListAll(ctx, bucket, basePrefix)
 	if err != nil {
 		return nil, err
 	}
 	m := make(map[string]cloudFingerprint, len(objs))
 	for _, o := range objs {
-		m[o.Key] = cloudFingerprint{size: o.Size, crc64: o.HashCrc64ecma}
+		m[o.Key] = cloudFingerprint{size: o.Size, crc64: o.CRC64}
 	}
 	return m, nil
 }
 
 // filterExistingJobs 过滤出真正需要上传的 job：云端无同 key → 传；
 // 同 key 但大小不同 → 传；大小相同则本地复算 crc64，一致 → 跳过（云端无 crc64 指纹时保守上传）。
-func filterExistingJobs(jobs []uploadJob, cloud map[string]cloudFingerprint) (kept []uploadJob, skipped int) {
+// stat 用于在云端列表未提供 crc64（如 OSS）时，对同大小候选做一次 HEAD 补齐；
+// stat 为 nil 或失败时按保守上传处理，不误跳过。
+func filterExistingJobs(ctx context.Context, jobs []uploadJob, cloud map[string]cloudFingerprint, stat func(ctx context.Context, key string) (cloudFingerprint, error)) (kept []uploadJob, skipped int) {
 	kept = make([]uploadJob, 0, len(jobs))
 	for _, j := range jobs {
 		cf, ok := cloud[j.key]
@@ -435,8 +453,13 @@ func filterExistingJobs(jobs []uploadJob, cloud map[string]cloudFingerprint) (ke
 			kept = append(kept, j)
 			continue
 		}
+		if cf.crc64 == 0 && stat != nil {
+			if f, serr := stat(ctx, j.key); serr == nil {
+				cf = f
+			}
+		}
 		if cf.crc64 == 0 || cf.crc64 != crc {
-			// 云端无 crc64（老对象等）或内容不一致：保守上传
+			// 云端无 crc64（老对象/后端不提供）或内容不一致：保守上传
 			kept = append(kept, j)
 			continue
 		}
@@ -449,7 +472,7 @@ func filterExistingJobs(jobs []uploadJob, cloud map[string]cloudFingerprint) (ke
 func localContentFingerprint(j uploadJob) (size int64, crc uint64, err error) {
 	if j.linkTarget != "" {
 		b := []byte(j.linkTarget)
-		h := crc64.New(tos.DefaultCrcTable())
+		h := crc64.New(crc64Table)
 		_, _ = h.Write(b)
 		return int64(len(b)), h.Sum64(), nil
 	}
@@ -458,7 +481,7 @@ func localContentFingerprint(j uploadJob) (size int64, crc uint64, err error) {
 		return 0, 0, err
 	}
 	defer f.Close()
-	h := crc64.New(tos.DefaultCrcTable())
+	h := crc64.New(crc64Table)
 	n, err := io.Copy(h, f)
 	if err != nil {
 		return 0, 0, err

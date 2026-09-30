@@ -22,9 +22,8 @@ import (
 
 	"github.com/seqyuan/aos/internal/config"
 	"github.com/seqyuan/aos/internal/human"
-	"github.com/seqyuan/aos/internal/tosx"
+	"github.com/seqyuan/aos/internal/objstore"
 	"github.com/spf13/pflag"
-	"github.com/volcengine/ve-tos-golang-sdk/v2/tos"
 )
 
 // version 由构建注入（-ldflags "-X main.version=..."）。
@@ -78,8 +77,8 @@ type baseFlags struct {
 }
 
 func (b *baseFlags) register(fs *pflag.FlagSet) {
-	fs.StringVar(&b.configPath, "config", "", "配置文件路径（默认：二进制同目录 aos.json）")
-	fs.StringVar(&b.endpoint, "endpoint", "", "覆盖 endpoint（如 tos-cn-beijing.ivolces.com）")
+	fs.StringVarP(&b.configPath, "config", "c", "", "配置文件路径（默认：二进制同目录 aos.json）")
+	fs.StringVar(&b.endpoint, "endpoint", "", "覆盖 endpoint（如 tos-cn-beijing.ivolces.com / oss-cn-beijing.aliyuncs.com）")
 	fs.StringVar(&b.region, "region", "", "覆盖 region（如 cn-beijing）")
 	fs.StringVar(&b.bucket, "bucket", "", "覆盖 bucket 名称")
 }
@@ -193,7 +192,7 @@ func cmdLS(args []string) int {
 	b.register(fs)
 	maxDepth := fs.Int("max-depth", 0, "最大显示深度（0 表示不限制）")
 	showMod := fs.BoolP("mod", "m", false, "显示文件修改时间")
-	if ok, err := parseFlagSet(fs, args, "用法: aos ls <tos路径> [选项]\n\n示例:\n  aos ls tos://example-bucket/ACME2026001\n  aos ls ACME2026001/PM-ACME2026001-01/dataset"); !ok {
+	if ok, err := parseFlagSet(fs, args, "用法: aos ls <云路径> [选项]\n\n示例:\n  aos ls tos://example-bucket/ACME2026001\n  aos ls ACME2026001/PM-ACME2026001-01/dataset"); !ok {
 		return 2
 	} else if err != nil {
 		return 2
@@ -209,7 +208,7 @@ func cmdLS(args []string) int {
 		fmt.Fprintf(os.Stderr, "aos ls: %v\n", err)
 		return 1
 	}
-	// 显式 tos://bucket/... 路径时 bucket 取自路径，无需配置默认 bucket；
+	// 显式 scheme://bucket/... 路径时 bucket 取自路径，无需配置默认 bucket；
 	// 否则（纯前缀形式）必须校验默认 bucket。
 	if strings.Contains(fs.Arg(0), "://") {
 		if err := cfg.ValidateAuth(); err != nil {
@@ -225,12 +224,12 @@ func cmdLS(args []string) int {
 	ctx, cancel = context.WithTimeout(ctx, 2*time.Minute) // ls 最多 2 分钟
 	defer cancel()
 
-	client, err := tosx.NewClient(cfg)
+	client, err := objstore.NewClient(cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "aos ls: %v\n", err)
 		return 1
 	}
-	if err := tosx.LS(ctx, client, cfg, tosx.LSOptions{
+	if err := objstore.LS(ctx, client, cfg, objstore.LSOptions{
 		Path:     fs.Arg(0),
 		MaxDepth: *maxDepth,
 		ShowMod:  *showMod,
@@ -252,27 +251,31 @@ func cmdConfig(args []string) int {
 	if len(args) > 0 && args[0] == "set" {
 		return cmdConfigSet(args[1:])
 	}
-	if len(args) > 0 && args[0] == "path" {
-		p, err := config.ResolvePath("")
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "aos config: %v\n", err)
-			return 1
-		}
-		fmt.Println(p)
-		return 0
+	fs := pflag.NewFlagSet("aos config", pflag.ContinueOnError)
+	configPath := fs.StringP("config", "c", "", "配置文件路径（默认：二进制同目录 aos.json）")
+	if ok, err := parseFlagSet(fs, args, "用法: aos config [path] [-c 配置文件]"); !ok {
+		return 2
+	} else if err != nil {
+		return 2
 	}
-	// 默认展示当前配置
-	path, err := config.ResolvePath("")
+	showPath := fs.NArg() > 0 && fs.Arg(0) == "path"
+	path, err := config.ResolvePath(*configPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "aos config: %v\n", err)
 		return 1
 	}
+	if showPath {
+		fmt.Println(path)
+		return 0
+	}
+	// 默认展示当前配置
 	cfg, err := config.Load(path)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "aos config: %v\n", err)
 		return 1
 	}
 	fmt.Printf("配置文件: %s\n", path)
+	fmt.Printf("  provider:  %s\n", cfg.ProviderOrDefault())
 	fmt.Printf("  endpoint:  %s\n", cfg.Endpoint)
 	fmt.Printf("  region:    %s\n", cfg.Region)
 	fmt.Printf("  bucket:    %s\n", cfg.Bucket)
@@ -335,7 +338,7 @@ func cmdCheck(args []string) int {
 	fs := pflag.NewFlagSet("aos check", pflag.ContinueOnError)
 	var b baseFlags
 	b.register(fs)
-	if ok, err := parseFlagSet(fs, args, "用法: aos check [选项]\n\n诊断 TOS 连接与权限。"); !ok {
+	if ok, err := parseFlagSet(fs, args, "用法: aos check [选项]\n\n诊断对象存储（TOS/OSS）连接与权限。"); !ok {
 		return 2
 	} else if err != nil {
 		return 2
@@ -347,6 +350,7 @@ func cmdCheck(args []string) int {
 		return 1
 	}
 	fmt.Printf("配置文件: %s\n", path)
+	fmt.Printf("provider: %s\n", cfg.ProviderOrDefault())
 	fmt.Printf("endpoint: %s\n", cfg.Endpoint)
 	fmt.Printf("region:   %s\n", cfg.Region)
 	fmt.Printf("bucket:   %s\n", cfg.Bucket)
@@ -359,50 +363,46 @@ func cmdCheck(args []string) int {
 	ctx, cancel := newSignalCtx()
 	defer cancel()
 
-	// 依次尝试：配置的 endpoint -> 按 region 推导的公网 endpoint（避免内网/异 region 配置下误探测）
-	type try struct{ ep, region string }
-	tries := []try{{cfg.Endpoint, cfg.Region}}
-	publicEP := ""
-	if cfg.Region != "" {
-		derived := "tos-" + cfg.Region + ".volces.com"
-		if cfg.Endpoint != derived {
-			publicEP = derived
+	// TOS：依次尝试配置的 endpoint -> 按 region 推导的公网 endpoint（避免内网/异 region 配置下误探测）；
+	// OSS：endpoint 已含 region，仅尝试配置的 endpoint。
+	tries := []config.Config{cfg}
+	if cfg.ProviderOrDefault() == config.ProviderTOS {
+		publicEP := ""
+		if cfg.Region != "" {
+			derived := "tos-" + cfg.Region + ".volces.com"
+			if cfg.Endpoint != derived {
+				publicEP = derived
+			}
+		} else if cfg.Endpoint != config.DefaultEndpoint {
+			publicEP = config.DefaultEndpoint
 		}
-	} else if cfg.Endpoint != config.DefaultEndpoint {
-		publicEP = config.DefaultEndpoint
-	}
-	if publicEP != "" {
-		region := cfg.Region
-		if region == "" {
-			region = config.DefaultRegion
+		if publicEP != "" {
+			region := cfg.Region
+			if region == "" {
+				region = config.DefaultRegion
+			}
+			tries = append(tries, config.Config{
+				Provider: cfg.Provider, Endpoint: publicEP, Region: region,
+				Bucket: cfg.Bucket, AccessKey: cfg.AccessKey, SecretKey: cfg.SecretKey,
+			})
 		}
-		tries = append(tries, try{publicEP, region})
 	}
 
 	for i, t := range tries {
 		if i > 0 {
-			fmt.Printf("\n—— 尝试公网 endpoint: %s ——\n", t.ep)
+			fmt.Printf("\n—— 尝试公网 endpoint: %s ——\n", t.EndpointOrDefault())
 		}
-		client, err := tosx.NewClient(config.Config{
-			Endpoint:  t.ep,
-			Region:    t.region,
-			Bucket:    cfg.Bucket,
-			AccessKey: cfg.AccessKey,
-			SecretKey: cfg.SecretKey,
-		})
+		client, err := objstore.NewClient(t)
 		if err != nil {
 			fmt.Printf("❌ 创建客户端失败: %v\n", err)
 			continue
 		}
 		probeCtx, probeCancel := context.WithTimeout(ctx, 15*time.Second)
-		out, err := client.ListObjectsType2(probeCtx, &tos.ListObjectsType2Input{
-			Bucket:  cfg.Bucket,
-			MaxKeys: 7,
-		})
+		objs, err := client.ListOnce(probeCtx, t.Bucket, "", 7)
 		probeCancel()
 		if err == nil {
-			fmt.Printf("✅ 连接与权限正常！bucket=%s 可列出对象\n", cfg.Bucket)
-			for i, o := range out.Contents {
+			fmt.Printf("✅ 连接与权限正常！bucket=%s 可列出对象\n", t.Bucket)
+			for i, o := range objs {
 				if i >= 7 {
 					break
 				}
@@ -410,9 +410,9 @@ func cmdCheck(args []string) int {
 			}
 			return 0
 		}
-		fmt.Printf("❌ %v\n", tosx.FriendlyError(err))
+		fmt.Printf("❌ %v\n", objstore.FriendlyError(err))
 	}
-	fmt.Fprintln(os.Stderr, "\n提示: 若为 Access Denied，请在火山云控制台为子账号授予 TOS 权限；若连接超时，请检查网络（内网环境使用 tos-cn-beijing.ivolces.com）。")
+	fmt.Fprintln(os.Stderr, "\n提示: 若为 Access Denied，请在控制台为子账号授予对应对象存储权限；若连接超时，请检查网络（内网环境用内网 endpoint）。")
 	return 1
 }
 
@@ -420,16 +420,19 @@ func cmdCheck(args []string) int {
 // usage
 
 func printUsage(w *os.File) {
-	fmt.Fprintf(w, `aos %s — 对象存储上传/下载/浏览工具（当前后端：火山云 TOS）
+	fmt.Fprintf(w, `aos %s — 对象存储上传/下载/浏览工具（后端：火山云 TOS / 阿里云 OSS）
 
 用法:
-  aos cp <源> [<目标>] [选项]      上传/下载（云上路径带 tos:// 前缀，方向由参数顺序决定）
-  aos ls <tos路径> [选项]          以目录树形式列出目标路径下的文件
-  aos rm <tos路径> [选项]          删除对象（-r 递归删除前缀，-f 跳过确认）
+  aos cp <源> [<目标>] [选项]      上传/下载（云上路径带 tos:// 或 oss:// 前缀，方向由参数顺序决定）
+  aos ls <云路径> [选项]          以目录树形式列出目标路径下的文件
+  aos rm <云路径> [选项]          删除对象（-r 递归删除前缀，-f 跳过确认）
   aos stat [选项]                  查询传输历史（上传/下载均记录；默认：中断/失败 + 近 2 天；-a 全部）
   aos check [选项]                 诊断连接与权限
   aos config [set] [选项]          查看/配置凭据
   aos version                      版本号
+
+通用选项:
+  -c, --config <路径>              指定配置文件（默认：二进制同目录 aos.json）
 
 cp 示例（上传：本地在前）:
   aos cp ./dataset tos://example-bucket/ACME2026001/PM-ACME2026001-01/dataset
@@ -466,8 +469,9 @@ stat 示例:
   - 路径自动规范化（./abc//de -> abc/de）
 
 配置说明:
-  配置文件默认位于 aos 二进制同目录的 aos.json，随二进制一起拷贝即可使用。
-  内网/专线环境用 endpoint tos-cn-beijing.ivolces.com；公网用 tos-cn-beijing.volces.com。
+  配置文件默认位于 aos 二进制同目录的 aos.json，随二进制一起拷贝即可使用（-c 可指定其他路径）。
+  后端自动识别：endpoint 含 aliyuncs.com 为 OSS、含 volces.com 为 TOS；也可在 aos.json 显式写 provider。
+  内网/专线环境用内网 endpoint：TOS 为 tos-cn-beijing.ivolces.com，OSS 为 oss-cn-beijing-internal.aliyuncs.com。
   可用环境变量 AOS_AK / AOS_SK / AOS_ENDPOINT / AOS_REGION / AOS_BUCKET / AOS_DB 覆盖。
 `, version)
 }

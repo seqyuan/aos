@@ -1,4 +1,4 @@
-package tosx
+package objstore
 
 import (
 	"fmt"
@@ -6,32 +6,59 @@ import (
 	"strings"
 )
 
-// TOSPath 解析后的 TOS 路径。
-type TOSPath struct {
+// 支持的云路径 scheme（统一按云路径处理，后端由配置的 provider 决定）。
+var cloudSchemes = []string{"tos", "oss", "s3"}
+
+// CloudScheme 判断输入是否为受支持的云路径 scheme 前缀，返回 scheme 名。
+func CloudScheme(input string) (string, bool) {
+	idx := strings.Index(input, "://")
+	if idx < 0 {
+		return "", false
+	}
+	scheme := strings.ToLower(strings.TrimSpace(input[:idx]))
+	for _, s := range cloudSchemes {
+		if scheme == s {
+			return scheme, true
+		}
+	}
+	return "", false
+}
+
+// IsCloudPath 判断是否为云上路径（tos:// / oss:// / s3://）。
+func IsCloudPath(s string) bool {
+	_, ok := CloudScheme(s)
+	return ok
+}
+
+// CloudPath 解析后的云存储路径。
+type CloudPath struct {
+	Scheme string // 输入显式 scheme；空表示未指定（沿用配置后端 scheme）
 	Bucket string // bucket 名
 	Prefix string // 对象前缀（不含开头的 '/'，末尾可能带 '/'）
 }
 
-// ParseTOSPath 解析用户输入的 TOS 路径，支持三种写法：
+// ParseCloudPath 解析用户输入的云路径，支持三种 scheme（tos/oss/s3）与以下写法：
 //
-//	tos://example-bucket/ACME2026001/PM-xxx-01/dataset  显式 bucket
-//	tos:///ACME2026001/PM-xxx-01/dataset               bucket 用配置默认值
-//	example-bucket/ACME2026001/...                     首段等于配置 bucket 时按 bucket 解析
-//	ACME2026001/PM-xxx-01/dataset                      纯前缀，使用配置的默认 bucket
+//	tos://example-bucket/ACME2026001/dataset   显式 bucket
+//	oss:///ACME2026001/dataset                 bucket 用配置默认值
+//	example-bucket/ACME2026001/...             首段等于配置 bucket 时按 bucket 解析
+//	ACME2026001/dataset                        纯前缀，使用配置的默认 bucket
 //
 // 返回的 Prefix 统一去掉开头 '/' 并补上末尾 '/'（空前缀返回 ""）。
-func ParseTOSPath(input, defaultBucket string) (TOSPath, error) {
+func ParseCloudPath(input, defaultBucket string) (CloudPath, error) {
 	p := strings.TrimSpace(input)
 	if p == "" {
-		return TOSPath{}, fmt.Errorf("tos 路径为空")
+		return CloudPath{}, fmt.Errorf("云路径为空")
 	}
 
+	scheme := ""
 	explicit := false
-	if idx := strings.Index(p, "://"); idx >= 0 {
-		p = p[idx+3:]
+	if s, ok := CloudScheme(p); ok {
+		scheme = s
+		p = p[strings.Index(p, "://")+3:]
 		explicit = true
 		if strings.HasPrefix(p, "/") {
-			// tos:///prefix：bucket 用配置默认值
+			// scheme:///prefix：bucket 用配置默认值
 			p = strings.TrimPrefix(p, "/")
 			explicit = false
 		}
@@ -48,7 +75,7 @@ func ParseTOSPath(input, defaultBucket string) (TOSPath, error) {
 	bucket, prefix := "", ""
 	switch {
 	case explicit:
-		// tos://bucket/prefix
+		// scheme://bucket/prefix
 		bucket, prefix = first, rest
 	case first == defaultBucket && defaultBucket != "":
 		// 首段就是默认 bucket
@@ -56,13 +83,13 @@ func ParseTOSPath(input, defaultBucket string) (TOSPath, error) {
 	default:
 		// 纯前缀，使用默认 bucket
 		if defaultBucket == "" {
-			return TOSPath{}, fmt.Errorf("无法确定 bucket：请输入 tos://bucket/prefix 形式，或先配置默认 bucket")
+			return CloudPath{}, fmt.Errorf("无法确定 bucket：请输入 tos://bucket/prefix（或 oss://、s3://）形式，或先配置默认 bucket")
 		}
 		bucket, prefix = defaultBucket, p
 	}
 
 	if bucket == "" {
-		return TOSPath{}, fmt.Errorf("路径中缺少 bucket 名称")
+		return CloudPath{}, fmt.Errorf("路径中缺少 bucket 名称")
 	}
 	prefix = strings.TrimPrefix(prefix, "/")
 	if prefix != "" {
@@ -71,7 +98,7 @@ func ParseTOSPath(input, defaultBucket string) (TOSPath, error) {
 			prefix += "/"
 		}
 	}
-	return TOSPath{Bucket: bucket, Prefix: prefix}, nil
+	return CloudPath{Scheme: scheme, Bucket: bucket, Prefix: prefix}, nil
 }
 
 // SafeJoin 把 slash 分隔的相对路径拼到 root 下。

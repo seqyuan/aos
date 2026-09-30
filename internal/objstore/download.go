@@ -1,4 +1,4 @@
-package tosx
+package objstore
 
 import (
 	"context"
@@ -13,7 +13,6 @@ import (
 	"github.com/seqyuan/aos/internal/human"
 	"github.com/seqyuan/aos/internal/manifest"
 	"github.com/seqyuan/aos/internal/ui"
-	"github.com/volcengine/ve-tos-golang-sdk/v2/tos"
 )
 
 // DownloadOptions 下载选项（aos cp <tos源> <本地目录>）。
@@ -46,20 +45,21 @@ type pathSource struct {
 }
 
 // resolvePathSource 从用户路径得到 bucket/prefix。
-// 显式 tos://other-bucket/... 必须使用路径中的 bucket，不能回落到配置默认值。
+// 显式 scheme://other-bucket/... 必须使用路径中的 bucket，不能回落到配置默认值。
 func resolvePathSource(path, defaultBucket string) (pathSource, error) {
-	tp, err := ParseTOSPath(path, defaultBucket)
+	tp, err := ParseCloudPath(path, defaultBucket)
 	if err != nil {
 		return pathSource{}, err
 	}
 	return pathSource{Bucket: tp.Bucket, Prefix: tp.Prefix}, nil
 }
 
-// Download 执行下载：把 tos:// 源前缀下的对象按相对路径下载到本地目录。
-func Download(ctx context.Context, client *tos.ClientV2, cfg config.Config, opt DownloadOptions, w io.Writer) error {
+// Download 执行下载：把云上源前缀下的对象按相对路径下载到本地目录。
+func Download(ctx context.Context, be Backend, cfg config.Config, opt DownloadOptions, w io.Writer) error {
 	if opt.Path == "" {
-		return fmt.Errorf("缺少 tos:// 源路径")
+		return fmt.Errorf("缺少云上源路径")
 	}
+	scheme := cfg.Scheme()
 	src, err := resolvePathSource(opt.Path, cfg.Bucket)
 	if err != nil {
 		return err
@@ -68,14 +68,14 @@ func Download(ctx context.Context, client *tos.ClientV2, cfg config.Config, opt 
 	remotePrefix := src.Prefix
 
 	files, remotePrefix, isSingleFile, err := resolveDownloadSource(ctx,
-		func(c context.Context, b, p string) ([]tos.ListedObjectV2, error) {
-			return ListAll(c, client, b, p)
+		func(c context.Context, b, p string) ([]Object, error) {
+			return be.ListAll(c, b, p)
 		}, bucket, remotePrefix)
 	if err != nil {
 		return err
 	}
 	if len(files) == 0 {
-		fmt.Fprintf(w, "远端 tos://%s/%s 下没有文件\n", bucket, strings.TrimSuffix(remotePrefix, "/"))
+		fmt.Fprintf(w, "远端 %s://%s/%s 下没有文件\n", scheme, bucket, strings.TrimSuffix(remotePrefix, "/"))
 		return nil
 	}
 
@@ -217,7 +217,7 @@ func Download(ctx context.Context, client *tos.ClientV2, cfg config.Config, opt 
 					}
 					continue
 				}
-				if err := DownloadOne(ctx, client, bucket, j.key, j.dest, j.size, opt.PartSize, opt.TaskNum, checkpointDir); err != nil {
+				if err := be.GetFile(ctx, bucket, j.key, j.dest, j.size, fileTransferOpt(opt.Checkpoint, checkpointDir, opt.PartSize, opt.TaskNum)); err != nil {
 					reportErr(err)
 					progress.Fail(j.key, err)
 					if recorder != nil {
@@ -290,9 +290,9 @@ func skipCompleted(overwrite bool, recordedETag, remoteETag, dest string, remote
 
 // resolveDownloadSource 确定实际要下载的远端文件列表。
 // 优先按目录前缀（带尾斜杠）列出；目录下没有文件时回退到“精确对象 key”模式，
-// 以支持 up 单文件或顶层软链接上传（对象 key 不带尾斜杠，前缀 + "/" 永远列不到）。
+// 以支持单文件或顶层软链接上传（对象 key 不带尾斜杠，前缀 + "/" 永远列不到）。
 // 返回：文件列表、实际使用的前缀、是否单文件模式。
-func resolveDownloadSource(ctx context.Context, list func(ctx context.Context, bucket, prefix string) ([]tos.ListedObjectV2, error), bucket, remotePrefix string) ([]tos.ListedObjectV2, string, bool, error) {
+func resolveDownloadSource(ctx context.Context, list func(ctx context.Context, bucket, prefix string) ([]Object, error), bucket, remotePrefix string) ([]Object, string, bool, error) {
 	objs, err := list(ctx, bucket, remotePrefix)
 	if err != nil {
 		return nil, "", false, err
@@ -312,15 +312,15 @@ func resolveDownloadSource(ctx context.Context, list func(ctx context.Context, b
 	}
 	for _, o := range exactObjs {
 		if o.Key == exactKey && !(strings.HasSuffix(o.Key, "/") && o.Size == 0) {
-			return []tos.ListedObjectV2{o}, exactKey, true, nil
+			return []Object{o}, exactKey, true, nil
 		}
 	}
 	return files, remotePrefix, false, nil
 }
 
 // collectFiles 从对象列表中过滤目录占位对象，返回真正的文件列表。
-func collectFiles(objs []tos.ListedObjectV2) []tos.ListedObjectV2 {
-	files := make([]tos.ListedObjectV2, 0, len(objs))
+func collectFiles(objs []Object) []Object {
+	files := make([]Object, 0, len(objs))
 	for _, o := range objs {
 		if strings.HasSuffix(o.Key, "/") && o.Size == 0 {
 			continue

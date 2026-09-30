@@ -1,7 +1,7 @@
 # aos 文档站点配置（mkdocs-material）
 # 构建输出到 _site/（GitHub Pages 部署目录），与原有 pages.yml 工作流保持兼容。
 site_name: aos
-site_description: 对象存储上传/下载/浏览命令行工具（当前后端为火山云 TOS）
+site_description: 对象存储上传/下载/浏览命令行工具（支持火山云 TOS / 阿里云 OSS）
 site_url: https://seqyuan.github.io/aos/
 docs_dir: docs
 site_dir: _site

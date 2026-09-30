@@ -1,4 +1,4 @@
-package tosx
+package objstore
 
 import (
 	"os"

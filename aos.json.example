@@ -1,4 +1,5 @@
 {
+  "provider": "tos",
   "endpoint": "tos-cn-beijing.volces.com",
   "region": "cn-beijing",
   "bucket": "example-bucket",

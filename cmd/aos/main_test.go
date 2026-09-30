@@ -60,23 +60,24 @@ func TestCPRejectsRemovedSubcommands(t *testing.T) {
 	}
 }
 
-func TestIsTOSPath(t *testing.T) {
+func TestIsCloudPath(t *testing.T) {
 	cases := []struct {
 		in   string
 		want bool
 	}{
 		{"tos://bucket/x", true},
 		{"tos:///x", true},
+		{"oss://bucket/x", true},
+		{"s3://bucket/key", true},
 		{"./dataset", false},
 		{"dataset", false},
 		{"/abs/path", false},
 		{"http://evil/key", false},
-		{"s3://bucket/key", false},
 		{"https://example/x", false},
 	}
 	for _, c := range cases {
-		if got := isTOSPath(c.in); got != c.want {
-			t.Errorf("isTOSPath(%q) = %v, want %v", c.in, got, c.want)
+		if got := isCloudPath(c.in); got != c.want {
+			t.Errorf("isCloudPath(%q) = %v, want %v", c.in, got, c.want)
 		}
 	}
 }

@@ -1,10 +1,10 @@
 # aos
 
-对象存储上传 / 下载 / 浏览命令行工具（Go 编写，单二进制分发）。当前后端为火山云 TOS：endpoint / region / bucket / AK/SK 放在配置文件里。传输实现集中在 `internal/tosx`（当前绑定火山云 TOS SDK），未来接入 S3 等其他对象存储时在该层抽取后端接口即可，命令行与配置层无需改动。
+对象存储上传 / 下载 / 浏览命令行工具（Go 编写，单二进制分发）。支持**火山云 TOS**与**阿里云 OSS**：endpoint / bucket / AK/SK 放在配置文件里，后端按 endpoint 自动识别（也可显式写 `provider`）。传输实现集中在 `internal/objstore`，通过 `Backend` 接口解耦，新增后端只需实现该接口。
 
 ## 特性
 
-- **`cp`**：上传 / 下载统一命令，方向由位置参数顺序决定（云上路径带 `tos://` 前缀，与 tosutil 心智一致）
+- **`cp`**：上传 / 下载统一命令，方向由位置参数顺序决定（云上路径带 `tos://` 或 `oss://` 前缀，与 tosutil/ossutil 心智一致）
 - **`ls`**：以目录树形式列出目标路径下的文件（带大小、数量统计）
 - **`rm`**：删除对象——单对象直接删（幂等）；`-r` 递归删除前缀下所有对象并顺带清理未完成分片上传任务；`-f` 跳过确认
 - **`stat`**：查询传输历史（上传/下载均记录；默认只显示中断/失败与近 2 天的任务，`-a` 显示全部）；`--id` 查看单次任务详情
@@ -85,10 +85,13 @@ go build -o aos ./cmd/aos   # version 显示 dev；要带版本号用 make build
 
 ## 配置
 
-配置文件 `aos.json` 位于 **aos 二进制所在目录**，随二进制一起拷贝即可在任何机器使用。查找顺序：命令行 `--config` 参数 → `AOS_CONFIG` 环境变量 → 二进制同目录 → 当前工作目录（最后一项仅为便于开发调试）：
+配置文件 `aos.json` 位于 **aos 二进制所在目录**，随二进制一起拷贝即可在任何机器使用。查找顺序：命令行 `-c`/`--config` 参数 → `AOS_CONFIG` 环境变量 → 二进制同目录 → 当前工作目录（最后一项仅为便于开发调试）：
+
+火山云 TOS：
 
 ```json
 {
+  "provider": "tos",
   "endpoint": "tos-cn-beijing.volces.com",
   "region": "cn-beijing",
   "bucket": "example-bucket",
@@ -97,19 +100,36 @@ go build -o aos ./cmd/aos   # version 显示 dev；要带版本号用 make build
 }
 ```
 
+阿里云 OSS：
+
+```json
+{
+  "provider": "oss",
+  "endpoint": "oss-cn-beijing-internal.aliyuncs.com",
+  "region": "cn-beijing",
+  "bucket": "sci-report",
+  "access_key_id": "LTAI...",
+  "secret_access_key": "..."
+}
+```
+
+- **后端选择**：`provider` 留空时按 endpoint 自动识别——含 `aliyuncs.com` 为 OSS，含 `volces.com`/`ivolces.com` 为 TOS（缺省 TOS）。因此绝大多数情况下**只改 endpoint / AK / SK 即可切换后端**。
 - **endpoint 说明**：
-  - 内网 / 专线环境：`tos-cn-beijing.ivolces.com`（走火山云 VPC 内网，公网不可达）
-  - 公网环境：`tos-cn-beijing.volces.com`
-- 修改配置：`./aos config set --ak AKLT... --sk WXpa... [--endpoint ...] [--region ...] [--bucket ...]`
-- 查看配置文件实际路径：`./aos config path`
+  - TOS 内网 / 专线：`tos-cn-beijing.ivolces.com`；TOS 公网：`tos-cn-beijing.volces.com`
+  - OSS 内网 / 专线：`oss-cn-beijing-internal.aliyuncs.com`；OSS 公网：`oss-cn-beijing.aliyuncs.com`
+  - OSS 默认走 **https**；若内网 endpoint 只能 http，请显式写成 `http://oss-cn-beijing-internal.aliyuncs.com`
+- **OSS 的 region 可留空**（OSS 签名不依赖 region，endpoint 已含区域）。
+- 修改配置：`./aos config set --ak ... --sk ... [--provider oss] [--endpoint ...] [--region ...] [--bucket ...]`
+- 查看配置文件实际路径：`./aos config path`（可加 `-c` 指定路径）
 - 可用环境变量覆盖（便于 CI）：`AOS_AK` / `AOS_SK` / `AOS_ENDPOINT` / `AOS_REGION` / `AOS_BUCKET`，或 `AOS_CONFIG` 指定配置文件路径
-- 单次命令覆盖：`--endpoint` / `--region` / `--bucket` 参数
+- 单次命令覆盖：`-c` / `--config`（配置文件）与 `--endpoint` / `--region` / `--bucket` 参数
 
 ## 路径规则
 
 | 输入 | 解析结果 |
 | --- | --- |
 | `tos://example-bucket/ACME2026001` | bucket=`example-bucket`, prefix=`ACME2026001/` |
+| `oss://example-bucket/ACME2026001` | 同上（`tos://` / `oss://` / `s3://` 等价，后端由配置决定） |
 | `tos:///ACME2026001/PM-ACME2026001-01/dataset` | bucket 用配置默认，prefix=`ACME2026001/PM-ACME2026001-01/dataset/` |
 | `example-bucket/ACME2026001`（仅 ls，首段等于默认 bucket） | bucket=`example-bucket`, prefix=`ACME2026001/` |
 | `ACME2026001/PM-ACME2026001-01/dataset`（仅 ls） | 纯前缀，使用默认 bucket |

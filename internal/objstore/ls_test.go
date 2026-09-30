@@ -1,4 +1,4 @@
-package tosx
+package objstore
 
 import (
 	"bytes"
@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-func TestParseTOSPath(t *testing.T) {
+func TestParseCloudPath(t *testing.T) {
 	cases := []struct {
 		in      string
 		bucket  string
@@ -21,23 +21,25 @@ func TestParseTOSPath(t *testing.T) {
 		{"example-bucket/ACME2026001", "example-bucket", "ACME2026001/", false},
 		{"ACME2026001/PM-x/dataset", "example-bucket", "ACME2026001/PM-x/dataset/", false},
 		{"tos://example-bucket/ACME2026001//dataset", "example-bucket", "ACME2026001/dataset/", false},
+		{"oss://example-bucket/x/y", "example-bucket", "x/y/", false},
+		{"s3:///x/y", "example-bucket", "x/y/", false},
 		{"", "", "", true},
 		{"tos://", "example-bucket", "", true},
 	}
 	for _, c := range cases {
-		got, err := ParseTOSPath(c.in, "example-bucket")
+		got, err := ParseCloudPath(c.in, "example-bucket")
 		if c.wantErr {
 			if err == nil {
-				t.Errorf("ParseTOSPath(%q): want error, got nil", c.in)
+				t.Errorf("ParseCloudPath(%q): want error, got nil", c.in)
 			}
 			continue
 		}
 		if err != nil {
-			t.Errorf("ParseTOSPath(%q): %v", c.in, err)
+			t.Errorf("ParseCloudPath(%q): %v", c.in, err)
 			continue
 		}
 		if got.Bucket != c.bucket || got.Prefix != c.prefix {
-			t.Errorf("ParseTOSPath(%q) = %+v, want bucket=%q prefix=%q", c.in, got, c.bucket, c.prefix)
+			t.Errorf("ParseCloudPath(%q) = %+v, want bucket=%q prefix=%q", c.in, got, c.bucket, c.prefix)
 		}
 	}
 }

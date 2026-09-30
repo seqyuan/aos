@@ -123,7 +123,7 @@ func TestRestoreLinksAfterDownloadNormal(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := restoreLinksAfterDownload(dbPath, nil, db.Task{}, false, "tos://b/P/x", dir, "b"); err != nil {
+	if err := restoreLinksAfterDownload(dbPath, nil, db.Task{}, false, "tos://b/P/x", dir, "b", "tos"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -253,7 +253,7 @@ func captureStderr(t *testing.T, fn func()) string {
 
 func TestRestoreLinksAfterDownloadWarnsOnBadPath(t *testing.T) {
 	out := captureStderr(t, func() {
-		if err := restoreLinksAfterDownload("", nil, db.Task{}, false, "", t.TempDir(), "b"); err != nil {
+		if err := restoreLinksAfterDownload("", nil, db.Task{}, false, "", t.TempDir(), "b", "tos"); err != nil {
 			t.Errorf("解析失败应跳过而非失败: %v", err)
 		}
 	})
@@ -269,7 +269,7 @@ func TestRestoreLinksAfterDownloadWarnsOnDBOpenError(t *testing.T) {
 	}
 	dbPath := filepath.Join(notDir, "aos.db")
 	out := captureStderr(t, func() {
-		if err := restoreLinksAfterDownload(dbPath, nil, db.Task{}, false, "tos://b/P/x", t.TempDir(), "b"); err != nil {
+		if err := restoreLinksAfterDownload(dbPath, nil, db.Task{}, false, "tos://b/P/x", t.TempDir(), "b", "tos"); err != nil {
 			t.Errorf("打开库失败应跳过而非失败: %v", err)
 		}
 	})
@@ -287,7 +287,7 @@ func TestRestoreLinksAfterDownloadSilentWhenNoUpTask(t *testing.T) {
 	}
 	database.Close()
 	out := captureStderr(t, func() {
-		if err := restoreLinksAfterDownload(dbPath, nil, db.Task{}, false, "tos://b/P/x", dir, "b"); err != nil {
+		if err := restoreLinksAfterDownload(dbPath, nil, db.Task{}, false, "tos://b/P/x", dir, "b", "tos"); err != nil {
 			t.Errorf("无匹配任务应跳过: %v", err)
 		}
 	})

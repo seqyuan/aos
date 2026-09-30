@@ -1,7 +1,9 @@
-package tosx
+package objstore
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -327,10 +329,13 @@ func TestUploadDestBucketFallsBackToConfig(t *testing.T) {
 }
 
 func TestUploadRemotePrefixIncludesBucket(t *testing.T) {
-	if got := uploadRemotePrefix("my-bucket", "P/x"); got != "tos://my-bucket/P/x" {
+	if got := uploadRemotePrefix("tos", "my-bucket", "P/x"); got != "tos://my-bucket/P/x" {
 		t.Fatalf("got %q, want tos://my-bucket/P/x", got)
 	}
-	if got := uploadRemotePrefix("", "P/x"); got != "P/x" {
+	if got := uploadRemotePrefix("oss", "my-bucket", "P/x"); got != "oss://my-bucket/P/x" {
+		t.Fatalf("got %q, want oss://my-bucket/P/x", got)
+	}
+	if got := uploadRemotePrefix("tos", "", "P/x"); got != "P/x" {
 		t.Fatalf("空 bucket 应保留裸前缀, got %q", got)
 	}
 }
@@ -407,7 +412,7 @@ func TestFilterExistingJobs(t *testing.T) {
 		"P/size.txt": {size: faSize + 1, crc64: faCRC}, // size 不同 → 上传
 	}
 
-	kept, skipped := filterExistingJobs(jobs, cloud)
+	kept, skipped := filterExistingJobs(context.Background(), jobs, cloud, nil)
 	if skipped != 1 {
 		t.Fatalf("skipped = %d, want 1（仅 P/a.txt 内容一致应跳过）", skipped)
 	}
@@ -434,15 +439,40 @@ func TestFilterExistingJobsLinkTarget(t *testing.T) {
 	cloud := map[string]cloudFingerprint{
 		"P/link.bam": {size: txtSize, crc64: txtCRC}, // 内容一致 → 跳过
 	}
-	kept, skipped := filterExistingJobs(jobs, cloud)
+	kept, skipped := filterExistingJobs(context.Background(), jobs, cloud, nil)
 	if skipped != 1 || len(kept) != 0 {
 		t.Fatalf("linkTarget 文本一致应跳过: kept=%d skipped=%d", len(kept), skipped)
 	}
 
 	// 云端内容不同（同 size 不同 crc64）→ 上传
 	cloud["P/link.bam"] = cloudFingerprint{size: txtSize, crc64: txtCRC + 9}
-	kept, skipped = filterExistingJobs(jobs, cloud)
+	kept, skipped = filterExistingJobs(context.Background(), jobs, cloud, nil)
 	if skipped != 0 || len(kept) != 1 {
 		t.Fatalf("内容不同应上传: kept=%d skipped=%d", len(kept), skipped)
+	}
+}
+
+// filterExistingJobs 在云端列表无 crc64（OSS）时，对同 size 候选调 stat 补齐；stat 失败则保守上传。
+func TestFilterExistingJobsStatFallback(t *testing.T) {
+	jobs := []uploadJob{{key: "P/a.txt", linkTarget: "same"}}
+	size, crc, _ := localContentFingerprint(jobs[0])
+	cloud := map[string]cloudFingerprint{"P/a.txt": {size: size, crc64: 0}}
+
+	// stat 返回正确 crc64 → 跳过
+	stat := func(ctx context.Context, key string) (cloudFingerprint, error) {
+		return cloudFingerprint{size: size, crc64: crc}, nil
+	}
+	kept, skipped := filterExistingJobs(context.Background(), jobs, cloud, stat)
+	if skipped != 1 || len(kept) != 0 {
+		t.Fatalf("stat 补齐 crc64 一致应跳过: kept=%d skipped=%d", len(kept), skipped)
+	}
+
+	// stat 失败 → 保守上传
+	failStat := func(ctx context.Context, key string) (cloudFingerprint, error) {
+		return cloudFingerprint{}, errors.New("head failed")
+	}
+	kept, skipped = filterExistingJobs(context.Background(), jobs, cloud, failStat)
+	if skipped != 0 || len(kept) != 1 {
+		t.Fatalf("stat 失败应保守上传: kept=%d skipped=%d", len(kept), skipped)
 	}
 }

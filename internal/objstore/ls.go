@@ -1,4 +1,4 @@
-package tosx
+package objstore
 
 import (
 	"context"
@@ -10,7 +10,6 @@ import (
 
 	"github.com/seqyuan/aos/internal/config"
 	"github.com/seqyuan/aos/internal/human"
-	"github.com/volcengine/ve-tos-golang-sdk/v2/tos"
 )
 
 // LSOptions ls 命令选项。
@@ -42,14 +41,18 @@ func (n *treeNode) ensureDir(name string) *treeNode {
 	return c
 }
 
-// LS 列出 tos 路径下的文件并打印目录树。
-func LS(ctx context.Context, client *tos.ClientV2, cfg config.Config, opt LSOptions, w io.Writer) error {
-	tp, err := ParseTOSPath(opt.Path, cfg.Bucket)
+// LS 列出云路径下的文件并打印目录树。
+func LS(ctx context.Context, be Backend, cfg config.Config, opt LSOptions, w io.Writer) error {
+	tp, err := ParseCloudPath(opt.Path, cfg.Bucket)
 	if err != nil {
 		return err
 	}
+	scheme := tp.Scheme
+	if scheme == "" {
+		scheme = cfg.Scheme()
+	}
 
-	objs, err := ListAll(ctx, client, tp.Bucket, tp.Prefix)
+	objs, err := be.ListAll(ctx, tp.Bucket, tp.Prefix)
 	if err != nil {
 		return err
 	}
@@ -58,10 +61,10 @@ func LS(ctx context.Context, client *tos.ClientV2, cfg config.Config, opt LSOpti
 	if len(objs) == 0 && tp.Prefix != "" {
 		exactKey := strings.TrimSuffix(tp.Prefix, "/")
 		if exactKey != "" {
-			if exactObjs, err := ListAll(ctx, client, tp.Bucket, exactKey); err == nil {
+			if exactObjs, err := be.ListAll(ctx, tp.Bucket, exactKey); err == nil {
 				for _, o := range exactObjs {
 					if o.Key == exactKey && !(strings.HasSuffix(o.Key, "/") && o.Size == 0) {
-						objs = []tos.ListedObjectV2{o}
+						objs = []Object{o}
 						break
 					}
 				}
@@ -75,7 +78,7 @@ func LS(ctx context.Context, client *tos.ClientV2, cfg config.Config, opt LSOpti
 		if idx := strings.LastIndex(base, "/"); idx >= 0 {
 			base = base[idx+1:]
 		}
-		fmt.Fprintf(w, "tos://%s/%s\n", tp.Bucket, o.Key)
+		fmt.Fprintf(w, "%s://%s/%s\n", scheme, tp.Bucket, o.Key)
 		line := fmt.Sprintf("└── %s  (%s)", base, human.Size(o.Size))
 		if opt.ShowMod {
 			line += fmt.Sprintf("  %s", o.LastModified.Format("2006-01-02 15:04"))
@@ -139,7 +142,7 @@ func LS(ctx context.Context, client *tos.ClientV2, cfg config.Config, opt LSOpti
 	countDirs(root)
 
 	// 打印
-	fmt.Fprintf(w, "tos://%s/%s\n", tp.Bucket, strings.TrimSuffix(tp.Prefix, "/"))
+	fmt.Fprintf(w, "%s://%s/%s\n", scheme, tp.Bucket, strings.TrimSuffix(tp.Prefix, "/"))
 	printNode(w, root, "", true, opt.MaxDepth, 0, opt.ShowMod)
 
 	if fileCount == 0 {

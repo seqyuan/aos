@@ -1,6 +1,6 @@
-// rm.go — aos rm：删除 TOS 对象与未完成分片上传任务。
+// rm.go — aos rm：删除对象与未完成分片上传任务。
 // 与 Download/Upload 同构：RM 构造真实存储操作，rmExecute 是注入化的可测编排。
-package tosx
+package objstore
 
 import (
 	"bufio"
@@ -12,11 +12,21 @@ import (
 	"sync"
 
 	"github.com/seqyuan/aos/internal/config"
-	"github.com/volcengine/ve-tos-golang-sdk/v2/tos"
 )
 
 // deleteBatchSize 批量删除单次请求的对象数上限（S3/TOS 限制 1000）。
 const deleteBatchSize = 1000
+
+// displayRemote 拼出用于提示的云路径：优先用用户输入，否则按 bucket/prefix 拼。
+func displayRemote(path, bucket, prefix string) string {
+	if path != "" {
+		return path
+	}
+	if prefix == "" {
+		return bucket
+	}
+	return bucket + "/" + strings.TrimSuffix(prefix, "/")
+}
 
 // RMOptions rm 选项。
 // Path 无 -r 时为精确对象 key（tos://bucket/dir/file.txt）；有 -r 时是前缀（tos://bucket/dir）。
@@ -40,27 +50,26 @@ type RMResult struct {
 
 // rmOps 把删除流程对存储的依赖注入化，便于单测。
 type rmOps struct {
-	listObjects func(ctx context.Context, bucket, prefix string) ([]tos.ListedObjectV2, error)
+	listObjects func(ctx context.Context, bucket, prefix string) ([]Object, error)
 	deleteOne   func(ctx context.Context, bucket, key string) error
 	// deleteBatch 批量删除；返回删除失败的对象 key（删除不存在的对象视为成功）。
 	deleteBatch func(ctx context.Context, bucket string, keys []string) []string
-	listUploads func(ctx context.Context, bucket, prefix string) ([]tos.ListedUpload, error)
+	listUploads func(ctx context.Context, bucket, prefix string) ([]MultipartUpload, error)
 	abortUpload func(ctx context.Context, bucket, key, uploadID string) error
 }
 
 // RM 执行删除。
-func RM(ctx context.Context, client *tos.ClientV2, cfg config.Config, opt RMOptions, w io.Writer) (RMResult, error) {
-	tp, err := ParseTOSPath(opt.Path, cfg.Bucket)
+func RM(ctx context.Context, be Backend, cfg config.Config, opt RMOptions, w io.Writer) (RMResult, error) {
+	tp, err := ParseCloudPath(opt.Path, cfg.Bucket)
 	if err != nil {
 		return RMResult{}, err
 	}
 	ops := rmOps{
-		listObjects: func(c context.Context, bucket, prefix string) ([]tos.ListedObjectV2, error) {
-			return ListAll(c, client, bucket, prefix)
+		listObjects: func(c context.Context, bucket, prefix string) ([]Object, error) {
+			return be.ListAll(c, bucket, prefix)
 		},
 		deleteOne: func(c context.Context, bucket, key string) error {
-			_, err := client.DeleteObjectV2(c, &tos.DeleteObjectV2Input{Bucket: bucket, Key: key})
-			return err
+			return be.DeleteObject(c, bucket, key)
 		},
 		deleteBatch: func(c context.Context, bucket string, keys []string) []string {
 			// 按 1000 分批；并发删除各批（worker 数同 defaultConcurrency），失败聚合返回。
@@ -90,23 +99,7 @@ func RM(ctx context.Context, client *tos.ClientV2, cfg config.Config, opt RMOpti
 				go func() {
 					defer wg.Done()
 					for batch := range ch {
-						objs := make([]tos.ObjectTobeDeleted, 0, len(batch))
-						for _, k := range batch {
-							objs = append(objs, tos.ObjectTobeDeleted{Key: k})
-						}
-						out, err := client.DeleteMultiObjects(c, &tos.DeleteMultiObjectsInput{
-							Bucket:  bucket,
-							Objects: objs,
-							Quiet:   true,
-						})
-						var batchFailed []string
-						if err != nil {
-							batchFailed = batch
-						} else {
-							for _, e := range out.Error {
-								batchFailed = append(batchFailed, e.Key)
-							}
-						}
+						batchFailed, _ := be.DeleteObjects(c, bucket, batch)
 						if len(batchFailed) > 0 {
 							mu.Lock()
 							failed = append(failed, batchFailed...)
@@ -122,14 +115,11 @@ func RM(ctx context.Context, client *tos.ClientV2, cfg config.Config, opt RMOpti
 			wg.Wait()
 			return failed
 		},
-		listUploads: func(c context.Context, bucket, prefix string) ([]tos.ListedUpload, error) {
-			return listMultipartUploads(c, client, bucket, prefix)
+		listUploads: func(c context.Context, bucket, prefix string) ([]MultipartUpload, error) {
+			return be.ListUploads(c, bucket, prefix)
 		},
 		abortUpload: func(c context.Context, bucket, key, uploadID string) error {
-			_, err := client.AbortMultipartUpload(c, &tos.AbortMultipartUploadInput{
-				Bucket: bucket, Key: key, UploadID: uploadID,
-			})
-			return err
+			return be.AbortUpload(c, bucket, key, uploadID)
 		},
 	}
 	return rmExecute(ctx, ops, tp.Bucket, tp.Prefix, opt, w)
@@ -165,7 +155,7 @@ func rmExecute(ctx context.Context, ops rmOps, bucket, prefix string, opt RMOpti
 	}
 	if len(files) == 0 && len(uploads) == 0 {
 		if !opt.Quiet {
-			fmt.Fprintf(w, "tos://%s/%s 下没有对象或未完成分片上传任务\n", bucket, strings.TrimSuffix(prefix, "/"))
+			fmt.Fprintf(w, "%s 下没有对象或未完成分片上传任务\n", displayRemote(opt.Path, bucket, prefix))
 		}
 		return RMResult{}, nil
 	}
@@ -234,10 +224,7 @@ func rmExecute(ctx context.Context, ops rmOps, bucket, prefix string, opt RMOpti
 		fmt.Fprintln(w)
 	}
 	if res.FailedObjects > 0 {
-		retry := opt.Path
-		if retry == "" {
-			retry = "tos://" + bucket + "/" + strings.TrimSuffix(prefix, "/")
-		}
+		retry := displayRemote(opt.Path, bucket, prefix)
 		return res, fmt.Errorf("删除失败 %d 个对象（已删除 %d 个；重试 aos rm %s -r -f 可继续删除剩余对象）",
 			res.FailedObjects, res.DeletedObjects, retry)
 	}
@@ -268,33 +255,6 @@ func rmConfirmPrompt(bucket string, wholeBucket bool, nFiles, nUploads int) stri
 	default:
 		return fmt.Sprintf("将清理 %d 个未完成分片上传任务。确认? (y/N) ", nUploads)
 	}
-}
-
-// listMultipartUploads 分页列出指定前缀下所有未完成的分片上传任务。
-func listMultipartUploads(ctx context.Context, client *tos.ClientV2, bucket, prefix string) ([]tos.ListedUpload, error) {
-	var all []tos.ListedUpload
-	keyMarker, uploadIDMarker := "", ""
-	for {
-		out, err := client.ListMultipartUploadsV2(ctx, &tos.ListMultipartUploadsV2Input{
-			Bucket:         bucket,
-			Prefix:         prefix,
-			KeyMarker:      keyMarker,
-			UploadIDMarker: uploadIDMarker,
-			MaxUploads:     1000,
-		})
-		if err != nil {
-			return nil, err
-		}
-		all = append(all, out.Uploads...)
-		if !out.IsTruncated {
-			break
-		}
-		keyMarker, uploadIDMarker = out.NextKeyMarker, out.NextUploadIDMarker
-		if keyMarker == "" && uploadIDMarker == "" {
-			break
-		}
-	}
-	return all, nil
 }
 
 // defaultConfirm 默认确认交互：终端打印提示并读取一行 y/yes。
