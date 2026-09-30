@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.5.1 — 2026-09-30
+
+- **文档/帮助文本补全（无功能变化）**，便于 TOS/OSS 双后端使用：
+  - README 路径规则 / 上传语义 / `rm` / 完整性校验 / 开发 等章节的 TOS-only 表述改为 TOS/OSS；
+  - 权限要求补充阿里云 RAM 授权示例（`AliyunOSSFullAccess` / 所需 `oss:*` 权限）；
+  - 命令行帮助补充路径 scheme 与配置后端一致性规则、OSS 示例、`AOS_PROVIDER`；
+  - 修正代码注释与错误信息里过时的 `aos config` / `ParseTOSPath` 引用（`aos config` 已于 v0.5.0 改为 `aos set`）。
+
 ## v0.5.0 — 2026-09-30
 
 - **新功能：支持阿里云 OSS 后端**（与火山云 TOS 并存）
