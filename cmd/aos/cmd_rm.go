@@ -35,11 +35,14 @@ func cmdRM(args []string) int {
 		fmt.Fprintln(os.Stderr, "aos rm: 路径必须是 tos:// 或 oss:// 开头的云上路径（如 tos://bucket/dir/file.txt）；rm 不删除本地文件")
 		return 2
 	}
-
 	cfg, _, err := b.loadConfig()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "aos rm: %v\n", err)
 		return 1
+	}
+	if err := objstore.ValidateScheme(cfg, fs.Arg(0)); err != nil {
+		fmt.Fprintf(os.Stderr, "aos rm: %v\n", err)
+		return 2
 	}
 	// 云上路径均为显式 scheme://（可省略 bucket），连接必需字段为 AK/SK/endpoint
 	if err := cfg.ValidateAuth(); err != nil {

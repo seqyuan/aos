@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+
+	"github.com/seqyuan/aos/internal/config"
 )
 
 // 支持的云路径 scheme（统一按云路径处理，后端由配置的 provider 决定）。
@@ -28,6 +30,22 @@ func CloudScheme(input string) (string, bool) {
 func IsCloudPath(s string) bool {
 	_, ok := CloudScheme(s)
 	return ok
+}
+
+// ValidateScheme 校验显式路径 scheme 与配置后端是否一致，防止用错配置/二进制时
+// 静默打错后端（如 TOS 配置 + oss:// 路径）。
+//   - 未写 scheme（纯前缀）：不校验；
+//   - s3://：中性别名，按配置后端，不校验；
+//   - tos:// / oss://：必须与配置后端一致，否则报错。
+func ValidateScheme(cfg config.Config, rawPath string) error {
+	scheme, ok := CloudScheme(rawPath)
+	if !ok || scheme == "s3" {
+		return nil
+	}
+	if provider := cfg.Scheme(); scheme != provider {
+		return fmt.Errorf("路径 %s:// 与当前配置后端 %s 不一致：请用对应的配置文件（-c）或副本，或加 --provider %s 覆盖", scheme, provider, scheme)
+	}
+	return nil
 }
 
 // CloudPath 解析后的云存储路径。

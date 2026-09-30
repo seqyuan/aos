@@ -131,6 +131,10 @@ func cmdCP(args []string) int {
 			fmt.Fprintf(os.Stderr, "aos cp: %v\n", err)
 			return 2
 		}
+		if err := objstore.ValidateScheme(cfg, pos[1]); err != nil {
+			fmt.Fprintf(os.Stderr, "aos cp: %v\n", err)
+			return 2
+		}
 		var excludes []string
 		if *exclude != "" {
 			for _, e := range strings.Split(*exclude, ",") {
@@ -224,6 +228,10 @@ func cmdCP(args []string) int {
 		}
 		defer rec.close()
 		opt.Recorder = rec
+	}
+	if err := objstore.ValidateScheme(cfg, tosPath); err != nil {
+		fmt.Fprintf(os.Stderr, "aos cp: %v\n", err)
+		return 2
 	}
 	if err := objstore.Download(ctx, client, cfg, opt, os.Stdout); err != nil {
 		fmt.Fprintf(os.Stderr, "aos cp: %v\n", err)

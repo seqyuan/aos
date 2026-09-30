@@ -12,6 +12,8 @@
 - **变更：`aos config set` 简化为 `aos set`**（写入凭据，自动 0600 权限）；移除 `aos config` 查看展示与 `aos config path`——查看/定位配置直接看 `aos.json` 即可（默认二进制同目录）
 - **修复：`aos set` 不再把默认 endpoint/region 固化进配置文件**（此前会写入 TOS 默认值）；未设置的字段不写入 JSON
 - **修复：Ctrl+C/超时后剩余文件立即跳过**（OSS SDK 分片上传 part 请求不支持 context，在途请求需等 SDK 超时后才停止）
+- **修复：路径 scheme 与配置后端不一致时报错**（`tos://` 只能配 TOS、`oss://` 只能配 OSS；`s3://` 中性）——同一机器用两份配置/两个副本时不会拿混静默打错后端
+- **修复：OSS 后端把 ctx 转发给 SDK**（List/Put/Get/Delete/Stat/Abort 等可被 Ctrl+C/超时取消）；`aos set` 拼错 `--provider` 立即报错
 - **包重命名**：`internal/tosx` → `internal/objstore`；`TOSPath`/`ParseTOSPath` → `CloudPath`/`ParseCloudPath`
 - **文档**：README/帮助文案补充 OSS 配置、`provider` 与 `-c` 说明
 

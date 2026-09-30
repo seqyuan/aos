@@ -213,6 +213,10 @@ func cmdLS(args []string) int {
 		fmt.Fprintf(os.Stderr, "aos ls: %v\n", err)
 		return 1
 	}
+	if err := objstore.ValidateScheme(cfg, fs.Arg(0)); err != nil {
+		fmt.Fprintf(os.Stderr, "aos ls: %v\n", err)
+		return 2
+	}
 	// 显式 scheme://bucket/... 路径时 bucket 取自路径，无需配置默认 bucket；
 	// 否则（纯前缀形式）必须校验默认 bucket。
 	if strings.Contains(fs.Arg(0), "://") {

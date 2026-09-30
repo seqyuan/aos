@@ -115,6 +115,7 @@ go build -o aos ./cmd/aos   # version 显示 dev；要带版本号用 make build
 ```
 
 - **后端选择**：`provider` 留空时按 endpoint 自动识别——含 `aliyuncs.com` 为 OSS，含 `volces.com`/`ivolces.com` 为 TOS（缺省 TOS）。因此绝大多数情况下**只改 endpoint / AK / SK 即可切换后端**。
+- **同一台机器同时用 TOS 与 OSS**：各写一份 `aos.json`，用 `-c` 切（或把二进制各拷一份到不同目录、各自放同目录 `aos.json`）。路径 scheme 会校验是否与配置后端一致（`tos://` 只能配 TOS、`oss://` 只能配 OSS；`s3://` 中性），避免配置/二进制拿混。
 - **endpoint 说明**：
   - TOS 内网 / 专线：`tos-cn-beijing.ivolces.com`；TOS 公网：`tos-cn-beijing.volces.com`
   - OSS 内网 / 专线：`oss-cn-beijing-internal.aliyuncs.com`；OSS 公网：`oss-cn-beijing.aliyuncs.com`
@@ -130,7 +131,7 @@ go build -o aos ./cmd/aos   # version 显示 dev；要带版本号用 make build
 | 输入 | 解析结果 |
 | --- | --- |
 | `tos://example-bucket/ACME2026001` | bucket=`example-bucket`, prefix=`ACME2026001/` |
-| `oss://example-bucket/ACME2026001` | 同上（`tos://` / `oss://` / `s3://` 等价，后端由配置决定） |
+| `oss://example-bucket/ACME2026001` | 同上（`tos://` / `oss://` 必须与当前配置后端一致，否则报错；`s3://` 为中性，按配置后端） |
 | `tos:///ACME2026001/PM-ACME2026001-01/dataset` | bucket 用配置默认，prefix=`ACME2026001/PM-ACME2026001-01/dataset/` |
 | `example-bucket/ACME2026001`（仅 ls，首段等于默认 bucket） | bucket=`example-bucket`, prefix=`ACME2026001/` |
 | `ACME2026001/PM-ACME2026001-01/dataset`（仅 ls） | 纯前缀，使用默认 bucket |

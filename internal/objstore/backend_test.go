@@ -63,3 +63,31 @@ func TestIsCloudPathSchemes(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateScheme(t *testing.T) {
+	tosCfg := config.Config{Endpoint: "tos-cn-beijing.volces.com"}
+	ossCfg := config.Config{Endpoint: "oss-cn-beijing.aliyuncs.com"}
+
+	cases := []struct {
+		name    string
+		cfg     config.Config
+		path    string
+		wantErr bool
+	}{
+		{"tos 配置 + tos 路径", tosCfg, "tos://b/x", false},
+		{"tos 配置 + oss 路径", tosCfg, "oss://b/x", true},
+		{"oss 配置 + oss 路径", ossCfg, "oss://b/x", false},
+		{"oss 配置 + tos 路径", ossCfg, "tos://b/x", true},
+		{"s3 中性（tos 配置）", tosCfg, "s3://b/x", false},
+		{"s3 中性（oss 配置）", ossCfg, "s3://b/x", false},
+		{"无 scheme 不校验", tosCfg, "b/x", false},
+		{"tos:/// 显式 scheme 也校验", tosCfg, "tos:///x", false},
+		{"tos:/// 与 oss 冲突", ossCfg, "tos:///x", true},
+	}
+	for _, c := range cases {
+		err := ValidateScheme(c.cfg, c.path)
+		if (err != nil) != c.wantErr {
+			t.Errorf("%s: ValidateScheme(%q) err=%v, wantErr=%v", c.name, c.path, err, c.wantErr)
+		}
+	}
+}
