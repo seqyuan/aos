@@ -7,7 +7,7 @@
 //	aos cp tos://example-bucket/ACME2026001/PM-xxx-01/dataset /local      下载
 //	aos stat                                            查询任务状态（sqlite）
 //	aos check                                           连接与权限诊断
-//	aos config set --ak AK... --sk SK...              配置凭据
+//	aos set --ak AK... --sk SK...                     配置凭据
 package main
 
 import (
@@ -49,8 +49,8 @@ func run(args []string) int {
 		return cmdStat(rest)
 	case "rm", "remove":
 		return cmdRM(rest)
-	case "config":
-		return cmdConfig(rest)
+	case "set":
+		return cmdSet(rest)
 	case "check":
 		return cmdCheck(rest)
 	case "version", "-version", "--version", "-v":
@@ -217,11 +217,11 @@ func cmdLS(args []string) int {
 	// 否则（纯前缀形式）必须校验默认 bucket。
 	if strings.Contains(fs.Arg(0), "://") {
 		if err := cfg.ValidateAuth(); err != nil {
-			fmt.Fprintf(os.Stderr, "aos ls: %v\n（运行 aos config set 配置凭据）\n", err)
+			fmt.Fprintf(os.Stderr, "aos ls: %v\n（运行 aos set 配置凭据）\n", err)
 			return 1
 		}
 	} else if err := cfg.Validate(); err != nil {
-		fmt.Fprintf(os.Stderr, "aos ls: %v\n（运行 aos config set 配置凭据）\n", err)
+		fmt.Fprintf(os.Stderr, "aos ls: %v\n（运行 aos set 配置凭据）\n", err)
 		return 1
 	}
 	ctx, cancel := newSignalCtx()
@@ -250,45 +250,35 @@ func cmdLS(args []string) int {
 }
 
 // ---------------------------------------------------------------------------
-// aos config
+// aos set
 
-// aos config 仅保留 `aos config set`（写入凭据）。
+// aos set 写入凭据（自动 0600 权限）。
 // 查看/定位配置请直接看 aos.json：默认位于二进制同目录，可用 -c 指定路径。
-func cmdConfig(args []string) int {
-	if len(args) > 0 && args[0] == "set" {
-		return cmdConfigSet(args[1:])
-	}
-	fmt.Fprintln(os.Stderr, "aos config: 仅支持 `aos config set`（写入凭据）")
-	fmt.Fprintln(os.Stderr, "查看配置请直接查看 aos.json（默认位于二进制同目录，可用 -c 指定路径）")
-	fmt.Fprintln(os.Stderr, "用法: aos config set --ak <AK> --sk <SK> [--provider tos|oss] [--endpoint ...] [--region ...] [--bucket ...] [-c 配置文件]")
-	return 2
-}
-
-func cmdConfigSet(args []string) int {
-	fs := pflag.NewFlagSet("aos config set", pflag.ContinueOnError)
+func cmdSet(args []string) int {
+	fs := pflag.NewFlagSet("aos set", pflag.ContinueOnError)
 	var b baseFlags
 	b.register(fs)
 	ak := fs.String("ak", "", "Access Key ID")
 	sk := fs.String("sk", "", "Secret Access Key")
-	if ok, err := parseFlagSet(fs, args, "用法: aos config set --ak <AK> --sk <SK> [选项]\n\n示例:\n  aos config set --ak AKLTMxxx --sk WXpaxxx --endpoint https://tos-cn-beijing.ivolces.com --bucket example-bucket"); !ok {
+	if ok, err := parseFlagSet(fs, args, "用法: aos set --ak <AK> --sk <SK> [选项]\n\n示例:\n  aos set --ak AKLTMxxx --sk WXpaxxx --endpoint https://tos-cn-beijing.ivolces.com --bucket example-bucket"); !ok {
 		return 2
 	} else if err != nil {
 		return 2
 	}
 	if *ak == "" || *sk == "" {
-		fmt.Fprintln(os.Stderr, "aos config set: 需要 --ak 与 --sk 参数")
+		fmt.Fprintln(os.Stderr, "aos set: 需要 --ak 与 --sk 参数")
 		fs.Usage()
 		return 2
 	}
 
 	path, err := config.ResolvePath(b.configPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "aos config set: %v\n", err)
+		fmt.Fprintf(os.Stderr, "aos set: %v\n", err)
 		return 1
 	}
 	cfg, err := config.Load(path)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "aos config set: %v\n", err)
+		fmt.Fprintf(os.Stderr, "aos set: %v\n", err)
 		return 1
 	}
 	cfg.AccessKey = *ak
@@ -306,7 +296,7 @@ func cmdConfigSet(args []string) int {
 		cfg.Bucket = b.bucket
 	}
 	if err := cfg.Save(path); err != nil {
-		fmt.Fprintf(os.Stderr, "aos config set: %v\n", err)
+		fmt.Fprintf(os.Stderr, "aos set: %v\n", err)
 		return 1
 	}
 	fmt.Printf("已写入配置: %s\n", path)
@@ -411,7 +401,7 @@ func printUsage(w *os.File) {
   aos rm <云路径> [选项]          删除对象（-r 递归删除前缀，-f 跳过确认）
   aos stat [选项]                  查询传输历史（上传/下载均记录；默认：中断/失败 + 近 2 天；-a 全部）
   aos check [选项]                 诊断连接与权限
-  aos config set [选项]            写入凭据（查看配置请直接看 aos.json）
+  aos set [选项]                   写入凭据（查看配置请直接看 aos.json）
   aos version                      版本号
 
 通用选项:

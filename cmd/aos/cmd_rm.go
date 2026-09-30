@@ -43,7 +43,7 @@ func cmdRM(args []string) int {
 	}
 	// 云上路径均为显式 scheme://（可省略 bucket），连接必需字段为 AK/SK/endpoint
 	if err := cfg.ValidateAuth(); err != nil {
-		fmt.Fprintf(os.Stderr, "aos rm: %v\n（运行 aos config set 配置凭据）\n", err)
+		fmt.Fprintf(os.Stderr, "aos rm: %v\n（运行 aos set 配置凭据）\n", err)
 		return 1
 	}
 
