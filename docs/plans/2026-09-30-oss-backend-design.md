@@ -36,23 +36,32 @@ cmd/aos  ─────────────►  internal/objstore
 
 ```go
 type Object struct { Key string; Size int64; ETag string; CRC64 uint64; LastModified time.Time }
-type Upload struct { Key, UploadID string }
+type Fingerprint struct { Size int64; CRC64 uint64 }
+type MultipartUpload struct { Key, UploadID string }
 type TransferOpt struct { PartSize int64; TaskNum int; CheckpointDir string }
 
 type Backend interface {
-    Provider() string
-    ListAll(ctx, bucket, prefix string) ([]Object, error)
-    ListOnce(ctx, bucket, prefix string, maxKeys int) ([]Object, error) // check 探测
+    // 唯一的列举/指纹原语：ListAll 基于 ListPage 实现；
+    // Fingerprints 由后端自行选最优路径（TOS 取自 List；OSS List + 并发 HEAD）
+    ListPage(ctx, bucket, prefix string, maxKeys int, token string) (objs []Object, nextToken string, err error)
+    Fingerprints(ctx, bucket, prefix string, keys []string) (map[string]Fingerprint, error)
     PutFile(ctx, bucket, key, localPath string, opt TransferOpt) error
     PutBytes(ctx, bucket, key string, data []byte) error
     GetFile(ctx, bucket, key, localPath string, size int64, opt TransferOpt) error
-    Stat(ctx, bucket, key string) (Object, error)
     DeleteObject(ctx, bucket, key string) error
     DeleteObjects(ctx, bucket string, keys []string) (failed []string, err error)
-    ListUploads(ctx, bucket, prefix string) ([]Upload, error)
+    ListUploads(ctx, bucket, prefix string) ([]MultipartUpload, error)
     AbortUpload(ctx, bucket, key, uploadID string) error
 }
+
+// 包内自由函数：分页拉全量
+func ListAll(ctx, be Backend, bucket, prefix string) ([]Object, error)
 ```
+
+设计要点：接口只保留 `ListPage`（列举）与 `Fingerprints`（内容指纹）两个
+“能力原语”，后端差异（TOS List 自带 crc64、OSS List 没有 crc64）被封装在
+各自实现里，编排层无感知。`Provider()` / `Stat()` 等仅测试用或与编排职责重叠
+的方法已移除。
 
 工厂：`NewClient(cfg config.Config) (Backend, error)` 按 `cfg.ProviderOrDefault()` 分派。
 
@@ -89,9 +98,11 @@ HEAD 失败则保守上传（不误跳过）。
 
 ## 测试
 
-- 编排层单测用假 `Backend`（替换原 `*tos.ClientV2` 注入）。
-- `ParseCloudPath` 覆盖三种 scheme。
-- `ProviderOrDefault` 覆盖显式 / 自动识别 / 缺省。
+- 编排层（Upload/Download/LS/RM）用内存 fake `Backend` 离线端到端覆盖
+  （上传下载往返、`--skip-existing`、清单跳过）。
+- `ParseCloudPath` / `IsCloudPath` / `ValidateScheme` 覆盖三种 scheme 与一致性校验。
+- `ProviderOrDefault`、`EndpointOrDefault` 覆盖显式 / 自动识别 / provider 感知缺省。
+- `filterExistingJobs` 覆盖内容一致/不一致/无 crc64 保守上传。
 - TOS/OSS 真实连通性由 `aos check` 人工验证；OSS 的 CRC64 一致性需真机校验。
 
 ## 迁移

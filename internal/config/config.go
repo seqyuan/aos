@@ -16,10 +16,11 @@ import (
 // DefaultFileName 默认配置文件名字（放在可执行文件同目录）。
 const DefaultFileName = "aos.json"
 
-// 默认值：火山云 TOS 北京区域。
+// 默认值：火山云 TOS / 阿里云 OSS 北京区域。
 const (
-	DefaultEndpoint = "tos-cn-beijing.volces.com"
-	DefaultRegion   = "cn-beijing"
+	DefaultEndpoint    = "tos-cn-beijing.volces.com"
+	DefaultOSSEndpoint = "oss-cn-beijing.aliyuncs.com"
+	DefaultRegion      = "cn-beijing"
 )
 
 // 支持的对象存储后端。
@@ -74,6 +75,9 @@ func (c Config) EndpointOrDefault() string {
 			return "oss-" + c.Region + ".aliyuncs.com"
 		}
 		return "tos-" + c.Region + ".volces.com"
+	}
+	if c.ProviderOrDefault() == ProviderOSS {
+		return DefaultOSSEndpoint
 	}
 	return DefaultEndpoint
 }

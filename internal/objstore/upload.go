@@ -85,17 +85,15 @@ func Upload(ctx context.Context, be Backend, cfg config.Config, opt UploadOption
 	bucket := uploadDestBucket(opt, cfg)
 	skippedExisting := 0
 	if opt.SkipExisting {
-		cloud, err := listCloudFingerprints(ctx, be, bucket, basePrefix)
+		keys := make([]string, 0, len(jobs))
+		for _, j := range jobs {
+			keys = append(keys, j.key)
+		}
+		cloud, err := be.Fingerprints(ctx, bucket, basePrefix, keys)
 		if err != nil {
 			return fmt.Errorf("列出目标前缀以判断已存在文件失败（可去掉 --skip-existing 后重试）: %w", err)
 		}
-		jobs, skippedExisting = filterExistingJobs(ctx, jobs, cloud, func(c context.Context, key string) (cloudFingerprint, error) {
-			o, err := be.Stat(c, bucket, key)
-			if err != nil {
-				return cloudFingerprint{}, err
-			}
-			return cloudFingerprint{size: o.Size, crc64: o.CRC64}, nil
-		})
+		jobs, skippedExisting = filterExistingJobs(jobs, cloud)
 		if len(jobs) == 0 {
 			printLinkSkipSummary(w, collected)
 			fmt.Fprintf(w, "全部 %d 个文件已在云端且内容一致，无需上传 ✅（--skip-existing）\n", skippedExisting)
@@ -416,31 +414,11 @@ func fileTransferOpt(checkpoint bool, checkpointDir string, partSize int64, task
 	return opt
 }
 
-// cloudFingerprint 云端对象指纹（来自 List 响应：TOS 服务端对每个对象计算 crc64）。
-type cloudFingerprint struct {
-	size  int64
-	crc64 uint64
-}
-
-// listCloudFingerprints 列出 bucket 下 basePrefix 前缀所有对象 → key → {size, crc64}。
-// 注：OSS 的 List 不含 crc64，此时 crc64 为 0，由 filterExistingJobs 按需 Stat 补齐。
-func listCloudFingerprints(ctx context.Context, be Backend, bucket, basePrefix string) (map[string]cloudFingerprint, error) {
-	objs, err := be.ListAll(ctx, bucket, basePrefix)
-	if err != nil {
-		return nil, err
-	}
-	m := make(map[string]cloudFingerprint, len(objs))
-	for _, o := range objs {
-		m[o.Key] = cloudFingerprint{size: o.Size, crc64: o.CRC64}
-	}
-	return m, nil
-}
-
 // filterExistingJobs 过滤出真正需要上传的 job：云端无同 key → 传；
-// 同 key 但大小不同 → 传；大小相同则本地复算 crc64，一致 → 跳过（云端无 crc64 指纹时保守上传）。
-// stat 用于在云端列表未提供 crc64（如 OSS）时，对同大小候选做一次 HEAD 补齐；
-// stat 为 nil 或失败时按保守上传处理，不误跳过。
-func filterExistingJobs(ctx context.Context, jobs []uploadJob, cloud map[string]cloudFingerprint, stat func(ctx context.Context, key string) (cloudFingerprint, error)) (kept []uploadJob, skipped int) {
+// 同 key 但大小不同 → 传；大小相同则本地复算 crc64，一致 → 跳过。
+// cloud 由 Backend.Fingerprints 提供（后端自行决定如何拿 crc64）；
+// 云端无 crc64（老对象/后端不提供）时保守上传，不误跳过。
+func filterExistingJobs(jobs []uploadJob, cloud map[string]Fingerprint) (kept []uploadJob, skipped int) {
 	kept = make([]uploadJob, 0, len(jobs))
 	for _, j := range jobs {
 		cf, ok := cloud[j.key]
@@ -454,17 +432,7 @@ func filterExistingJobs(ctx context.Context, jobs []uploadJob, cloud map[string]
 			kept = append(kept, j) // 本地文件读取失败：保守上传
 			continue
 		}
-		if cf.size != size {
-			kept = append(kept, j)
-			continue
-		}
-		if cf.crc64 == 0 && stat != nil {
-			if f, serr := stat(ctx, j.key); serr == nil {
-				cf = f
-			}
-		}
-		if cf.crc64 == 0 || cf.crc64 != crc {
-			// 云端无 crc64（老对象/后端不提供）或内容不一致：保守上传
+		if cf.Size != size || cf.CRC64 == 0 || cf.CRC64 != crc {
 			kept = append(kept, j)
 			continue
 		}

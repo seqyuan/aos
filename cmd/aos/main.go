@@ -379,7 +379,7 @@ func cmdCheck(args []string) int {
 			continue
 		}
 		probeCtx, probeCancel := context.WithTimeout(ctx, 15*time.Second)
-		objs, err := client.ListOnce(probeCtx, t.Bucket, "", 7)
+		objs, _, err := client.ListPage(probeCtx, t.Bucket, "", 7, "")
 		probeCancel()
 		if err == nil {
 			fmt.Printf("✅ 连接与权限正常！bucket=%s 可列出对象\n", t.Bucket)

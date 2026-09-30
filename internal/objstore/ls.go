@@ -52,7 +52,7 @@ func LS(ctx context.Context, be Backend, cfg config.Config, opt LSOptions, w io.
 		scheme = cfg.Scheme()
 	}
 
-	objs, err := be.ListAll(ctx, tp.Bucket, tp.Prefix)
+	objs, err := ListAll(ctx, be, tp.Bucket, tp.Prefix)
 	if err != nil {
 		return err
 	}
@@ -61,7 +61,7 @@ func LS(ctx context.Context, be Backend, cfg config.Config, opt LSOptions, w io.
 	if len(objs) == 0 && tp.Prefix != "" {
 		exactKey := strings.TrimSuffix(tp.Prefix, "/")
 		if exactKey != "" {
-			if exactObjs, err := be.ListAll(ctx, tp.Bucket, exactKey); err == nil {
+			if exactObjs, err := ListAll(ctx, be, tp.Bucket, exactKey); err == nil {
 				for _, o := range exactObjs {
 					if o.Key == exactKey && !(strings.HasSuffix(o.Key, "/") && o.Size == 0) {
 						objs = []Object{o}

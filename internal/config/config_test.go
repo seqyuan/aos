@@ -171,3 +171,15 @@ func TestValidateAuthRejectsUnknownProvider(t *testing.T) {
 		}
 	}
 }
+
+// EndpointOrDefault 应 provider 感知：OSS 且无 endpoint/region 时不应回落到 TOS 默认。
+func TestEndpointOrDefaultProviderAware(t *testing.T) {
+	oss := Config{Provider: ProviderOSS}
+	if got := oss.EndpointOrDefault(); got != DefaultOSSEndpoint {
+		t.Fatalf("OSS 无 endpoint/region: got %q, want %q", got, DefaultOSSEndpoint)
+	}
+	tos := Config{}
+	if got := tos.EndpointOrDefault(); got != DefaultEndpoint {
+		t.Fatalf("TOS 无 endpoint/region: got %q, want %q", got, DefaultEndpoint)
+	}
+}

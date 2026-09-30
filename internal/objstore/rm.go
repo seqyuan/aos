@@ -66,7 +66,7 @@ func RM(ctx context.Context, be Backend, cfg config.Config, opt RMOptions, w io.
 	}
 	ops := rmOps{
 		listObjects: func(c context.Context, bucket, prefix string) ([]Object, error) {
-			return be.ListAll(c, bucket, prefix)
+			return ListAll(c, be, bucket, prefix)
 		},
 		deleteOne: func(c context.Context, bucket, key string) error {
 			return be.DeleteObject(c, bucket, key)

@@ -69,7 +69,7 @@ func Download(ctx context.Context, be Backend, cfg config.Config, opt DownloadOp
 
 	files, remotePrefix, isSingleFile, err := resolveDownloadSource(ctx,
 		func(c context.Context, b, p string) ([]Object, error) {
-			return be.ListAll(c, b, p)
+			return ListAll(c, be, b, p)
 		}, bucket, remotePrefix)
 	if err != nil {
 		return err

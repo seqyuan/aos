@@ -42,21 +42,28 @@ type TransferOpt struct {
 }
 
 // Backend 对象存储后端接口。
+//
+// 设计约定：
+//   - ListPage 是唯一的列举原语，ListAll 基于它实现（见下方自由函数）；
+//   - Fingerprints 是唯一的“内容指纹”入口，后端自行选择最优路径
+//     （TOS 从 List 直接拿到 crc64；OSS List 后再并发 HEAD 补齐），
+//     编排层不关心后端能力差异。
+//
+// 取消语义：所有方法都应尊重 ctx；OSS 受 SDK 限制，分片上传的 part/complete
+// 请求无法取消（在途请求需等 SDK 超时）。
 type Backend interface {
-	// Provider 返回后端名（tos / oss），用于路径显示与错误提示。
-	Provider() string
-	// ListAll 分页列出 bucket 中指定前缀下的所有对象。
-	ListAll(ctx context.Context, bucket, prefix string) ([]Object, error)
-	// ListOnce 单次列出（不做分页），用于 check 等轻量探测。
-	ListOnce(ctx context.Context, bucket, prefix string, maxKeys int) ([]Object, error)
+	// ListPage 列出 bucket 下 prefix 前缀的对象，最多 maxKeys 个，从 token 开始。
+	// 返回本页对象与下一页 token（无下一页时为空串）。
+	ListPage(ctx context.Context, bucket, prefix string, maxKeys int, token string) (objs []Object, nextToken string, err error)
+	// Fingerprints 返回 keys 中确实存在于 bucket/prefix 下对象的内容指纹。
+	// 不存在的 key 不出现在结果中；crc64 为 0 表示后端无法提供。
+	Fingerprints(ctx context.Context, bucket, prefix string, keys []string) (map[string]Fingerprint, error)
 	// PutFile 上传单个文件（大文件自动分片）。
 	PutFile(ctx context.Context, bucket, key, localPath string, opt TransferOpt) error
 	// PutBytes 上传一段内存内容（用于软链接转文本文件）。
 	PutBytes(ctx context.Context, bucket, key string, data []byte) error
 	// GetFile 下载单个对象到本地文件；size 为远端对象大小（用于选择单次/分片）。
 	GetFile(ctx context.Context, bucket, key, localPath string, size int64, opt TransferOpt) error
-	// Stat 返回对象元信息（含 CRC64，如后端支持）。
-	Stat(ctx context.Context, bucket, key string) (Object, error)
 	// DeleteObject 删除单个对象（幂等）。
 	DeleteObject(ctx context.Context, bucket, key string) error
 	// DeleteObjects 批量删除；返回删除失败的对象 key（删除不存在的对象视为成功）。
@@ -66,6 +73,33 @@ type Backend interface {
 	// AbortUpload 取消一个未完成的分片上传任务。
 	AbortUpload(ctx context.Context, bucket, key, uploadID string) error
 }
+
+// Fingerprint 对象内容指纹：大小 + CRC64-ECMA（0 表示后端无法提供）。
+type Fingerprint struct {
+	Size  int64
+	CRC64 uint64
+}
+
+// ListAll 通过后端的 ListPage 分页列出 bucket 下 prefix 前缀的所有对象。
+func ListAll(ctx context.Context, be Backend, bucket, prefix string) ([]Object, error) {
+	var all []Object
+	token := ""
+	for {
+		objs, next, err := be.ListPage(ctx, bucket, prefix, listPageSize, token)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, objs...)
+		if next == "" {
+			break
+		}
+		token = next
+	}
+	return all, nil
+}
+
+// listPageSize 分页列举单页大小（TOS/OSS 上限均为 1000）。
+const listPageSize = 1000
 
 // NewClient 根据配置创建对应后端的客户端。
 // 后端由 cfg.ProviderOrDefault() 决定（显式 provider 优先，否则按 endpoint 识别）。

@@ -31,8 +31,6 @@ func newTOSBackend(cfg config.Config) (*tosBackend, error) {
 	return &tosBackend{client: client}, nil
 }
 
-func (b *tosBackend) Provider() string { return config.ProviderTOS }
-
 func tosObject(o tos.ListedObjectV2) Object {
 	return Object{
 		Key:          o.Key,
@@ -43,49 +41,44 @@ func tosObject(o tos.ListedObjectV2) Object {
 	}
 }
 
-// ListOnce 单次列出指定前缀下的对象（不分页）。
-func (b *tosBackend) ListOnce(ctx context.Context, bucket, prefix string, maxKeys int) ([]Object, error) {
+// ListPage 列出指定前缀下的对象（单页）。
+func (b *tosBackend) ListPage(ctx context.Context, bucket, prefix string, maxKeys int, token string) ([]Object, string, error) {
 	out, err := b.client.ListObjectsType2(ctx, &tos.ListObjectsType2Input{
-		Bucket:  bucket,
-		Prefix:  prefix,
-		MaxKeys: maxKeys,
+		Bucket:            bucket,
+		Prefix:            prefix,
+		ContinuationToken: token,
+		MaxKeys:           maxKeys,
 	})
 	if err != nil {
-		return nil, FriendlyError(err)
+		return nil, "", FriendlyError(err)
 	}
 	objs := make([]Object, 0, len(out.Contents))
 	for _, o := range out.Contents {
 		objs = append(objs, tosObject(o))
 	}
-	return objs, nil
+	if !out.IsTruncated {
+		return objs, "", nil
+	}
+	return objs, out.NextContinuationToken, nil
 }
 
-// ListAll 分页列出 bucket 中指定前缀下的所有对象。
-func (b *tosBackend) ListAll(ctx context.Context, bucket, prefix string) ([]Object, error) {
-	var all []Object
-	token := ""
-	for {
-		out, err := b.client.ListObjectsType2(ctx, &tos.ListObjectsType2Input{
-			Bucket:            bucket,
-			Prefix:            prefix,
-			ContinuationToken: token,
-			MaxKeys:           1000,
-		})
-		if err != nil {
-			return nil, FriendlyError(err)
-		}
-		for _, o := range out.Contents {
-			all = append(all, tosObject(o))
-		}
-		if !out.IsTruncated {
-			break
-		}
-		token = out.NextContinuationToken
-		if token == "" {
-			break
+// Fingerprints 从 List 响应直接取 crc64（TOS 服务端已计算），无需额外 HEAD。
+func (b *tosBackend) Fingerprints(ctx context.Context, bucket, prefix string, keys []string) (map[string]Fingerprint, error) {
+	objs, err := ListAll(ctx, b, bucket, prefix)
+	if err != nil {
+		return nil, err
+	}
+	want := make(map[string]bool, len(keys))
+	for _, k := range keys {
+		want[k] = true
+	}
+	m := make(map[string]Fingerprint, len(keys))
+	for _, o := range objs {
+		if want[o.Key] {
+			m[o.Key] = Fingerprint{Size: o.Size, CRC64: o.CRC64}
 		}
 	}
-	return all, nil
+	return m, nil
 }
 
 // PutFile 上传单个文件：小于 5MB 用单次 PUT，大文件用 SDK 分片上传（可开启断点续传）。
@@ -163,21 +156,6 @@ func (b *tosBackend) GetFile(ctx context.Context, bucket, key, localPath string,
 		}
 	}
 	return FriendlyError(err)
-}
-
-// Stat 返回对象元信息（含 CRC64）。
-func (b *tosBackend) Stat(ctx context.Context, bucket, key string) (Object, error) {
-	out, err := b.client.HeadObjectV2(ctx, &tos.HeadObjectV2Input{Bucket: bucket, Key: key})
-	if err != nil {
-		return Object{}, FriendlyError(err)
-	}
-	return Object{
-		Key:          key,
-		Size:         out.ContentLength,
-		ETag:         out.ETag,
-		CRC64:        out.HashCrc64ecma,
-		LastModified: out.LastModified,
-	}, nil
 }
 
 // DeleteObject 删除单个对象（对象不存在也返回成功，幂等）。

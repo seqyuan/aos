@@ -17,8 +17,8 @@ func TestNewClientSelectsBackend(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewClient(oss) 失败: %v", err)
 	}
-	if be.Provider() != config.ProviderOSS {
-		t.Fatalf("Provider() = %q, want oss（按 endpoint 自动识别）", be.Provider())
+	if _, ok := be.(*ossBackend); !ok {
+		t.Fatalf("NewClient(oss) 返回 %T，want *ossBackend（按 endpoint 自动识别）", be)
 	}
 
 	tosCfg := config.Config{
@@ -32,8 +32,8 @@ func TestNewClientSelectsBackend(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewClient(tos) 失败: %v", err)
 	}
-	if be2.Provider() != config.ProviderTOS {
-		t.Fatalf("Provider() = %q, want tos", be2.Provider())
+	if _, ok := be2.(*tosBackend); !ok {
+		t.Fatalf("NewClient(tos) 返回 %T，want *tosBackend", be2)
 	}
 
 	// 显式 provider 覆盖自动识别
@@ -46,8 +46,8 @@ func TestNewClientSelectsBackend(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewClient(显式 oss) 失败: %v", err)
 	}
-	if be3.Provider() != config.ProviderOSS {
-		t.Fatalf("Provider() = %q, want oss（显式覆盖）", be3.Provider())
+	if _, ok := be3.(*ossBackend); !ok {
+		t.Fatalf("NewClient(显式 oss) 返回 %T，want *ossBackend（显式覆盖）", be3)
 	}
 }
 

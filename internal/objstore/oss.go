@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"time"
+	"sync"
 
 	"github.com/aliyun/aliyun-oss-go-sdk/oss"
 	"github.com/seqyuan/aos/internal/config"
@@ -35,8 +35,6 @@ func newOSSBackend(cfg config.Config) (*ossBackend, error) {
 	return &ossBackend{client: client}, nil
 }
 
-func (b *ossBackend) Provider() string { return config.ProviderOSS }
-
 // bucket 取指定 bucket 的操作句柄。
 func (b *ossBackend) bucket(name string) (*oss.Bucket, error) {
 	bk, err := b.client.Bucket(name)
@@ -46,15 +44,15 @@ func (b *ossBackend) bucket(name string) (*oss.Bucket, error) {
 	return bk, nil
 }
 
-// ListOnce 单次列出指定前缀下的对象（不分页）。
-func (b *ossBackend) ListOnce(ctx context.Context, bucket, prefix string, maxKeys int) ([]Object, error) {
+// ListPage 列出指定前缀下的对象（单页）。
+func (b *ossBackend) ListPage(ctx context.Context, bucket, prefix string, maxKeys int, token string) ([]Object, string, error) {
 	bk, err := b.bucket(bucket)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	out, err := bk.ListObjectsV2(oss.WithContext(ctx), oss.Prefix(prefix), oss.MaxKeys(maxKeys))
+	out, err := bk.ListObjectsV2(oss.WithContext(ctx), oss.Prefix(prefix), oss.MaxKeys(maxKeys), oss.ContinuationToken(token))
 	if err != nil {
-		return nil, FriendlyError(err)
+		return nil, "", FriendlyError(err)
 	}
 	objs := make([]Object, 0, len(out.Objects))
 	for _, o := range out.Objects {
@@ -65,37 +63,73 @@ func (b *ossBackend) ListOnce(ctx context.Context, bucket, prefix string, maxKey
 			LastModified: o.LastModified,
 		})
 	}
-	return objs, nil
+	if !out.IsTruncated {
+		return objs, "", nil
+	}
+	return objs, out.NextContinuationToken, nil
 }
 
-// ListAll 分页列出 bucket 中指定前缀下的所有对象。
-// 注意：OSS 的 List 响应不含 CRC64，CRC64 恒为 0，需时由 Stat 补齐。
-func (b *ossBackend) ListAll(ctx context.Context, bucket, prefix string) ([]Object, error) {
+// Fingerprints 返回 keys 中确实存在的对象的 {size, crc64}。
+// OSS 的 List 响应不含 CRC64，故先 List 确定存在性与大小，再仅对命中 key
+// 并发 HEAD 取 x-oss-hash-crc64ecma（新增文件不 HEAD，一次 List 即可判定不存在）。
+// HEAD 失败/无 crc 时该 key 的 CRC64 为 0，调用方会保守上传。
+func (b *ossBackend) Fingerprints(ctx context.Context, bucket, prefix string, keys []string) (map[string]Fingerprint, error) {
+	objs, err := ListAll(ctx, b, bucket, prefix)
+	if err != nil {
+		return nil, err
+	}
+	want := make(map[string]bool, len(keys))
+	for _, k := range keys {
+		want[k] = true
+	}
+	out := make(map[string]Fingerprint, len(keys))
+	var toHead []string
+	for _, o := range objs {
+		if want[o.Key] {
+			out[o.Key] = Fingerprint{Size: o.Size}
+			toHead = append(toHead, o.Key)
+		}
+	}
+	if len(toHead) == 0 {
+		return out, nil
+	}
 	bk, err := b.bucket(bucket)
 	if err != nil {
 		return nil, err
 	}
-	var all []Object
-	token := ""
-	for {
-		out, err := bk.ListObjectsV2(oss.WithContext(ctx), oss.Prefix(prefix), oss.MaxKeys(1000), oss.ContinuationToken(token))
-		if err != nil {
-			return nil, FriendlyError(err)
-		}
-		for _, o := range out.Objects {
-			all = append(all, Object{
-				Key:          o.Key,
-				Size:         o.Size,
-				ETag:         o.ETag,
-				LastModified: o.LastModified,
-			})
-		}
-		if !out.IsTruncated || out.NextContinuationToken == "" {
-			break
-		}
-		token = out.NextContinuationToken
+
+	workers := defaultConcurrency()
+	if workers > len(toHead) {
+		workers = len(toHead)
 	}
-	return all, nil
+	var (
+		wg sync.WaitGroup
+		mu sync.Mutex
+	)
+	ch := make(chan string)
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for key := range ch {
+				h, err := bk.GetObjectMeta(key, oss.WithContext(ctx))
+				if err != nil {
+					continue // HEAD 失败：crc64 保持 0，保守上传
+				}
+				mu.Lock()
+				fp := out[key]
+				fp.CRC64 = headerUint64(h, oss.HTTPHeaderOssCRC64)
+				out[key] = fp
+				mu.Unlock()
+			}
+		}()
+	}
+	for _, k := range toHead {
+		ch <- k
+	}
+	close(ch)
+	wg.Wait()
+	return out, nil
 }
 
 // PutFile 上传单个文件：小于 5MB 用单次 PUT，大文件用 SDK 分片上传（可开启断点续传）。
@@ -141,25 +175,6 @@ func (b *ossBackend) GetFile(ctx context.Context, bucket, key, localPath string,
 		opts = append(opts, oss.CheckpointDir(true, opt.CheckpointDir))
 	}
 	return FriendlyError(bk.DownloadFile(key, localPath, partSizeOrDefault(opt.PartSize), opts...))
-}
-
-// Stat 通过 GetObjectMeta(HEAD) 返回对象元信息（含 x-oss-hash-crc64ecma）。
-func (b *ossBackend) Stat(ctx context.Context, bucket, key string) (Object, error) {
-	bk, err := b.bucket(bucket)
-	if err != nil {
-		return Object{}, err
-	}
-	h, err := bk.GetObjectMeta(key, oss.WithContext(ctx))
-	if err != nil {
-		return Object{}, FriendlyError(err)
-	}
-	return Object{
-		Key:          key,
-		Size:         headerInt64(h, oss.HTTPHeaderContentLength),
-		ETag:         h.Get(oss.HTTPHeaderEtag),
-		CRC64:        headerUint64(h, oss.HTTPHeaderOssCRC64),
-		LastModified: headerTime(h, oss.HTTPHeaderLastModified),
-	}, nil
 }
 
 // DeleteObject 删除单个对象（对象不存在也返回成功，幂等）。
@@ -241,17 +256,7 @@ func (b *ossBackend) AbortUpload(ctx context.Context, bucket, key, uploadID stri
 	}, oss.WithContext(ctx)))
 }
 
-func headerInt64(h http.Header, key string) int64 {
-	n, _ := strconv.ParseInt(h.Get(key), 10, 64)
-	return n
-}
-
 func headerUint64(h http.Header, key string) uint64 {
 	n, _ := strconv.ParseUint(h.Get(key), 10, 64)
 	return n
-}
-
-func headerTime(h http.Header, key string) time.Time {
-	t, _ := http.ParseTime(h.Get(key))
-	return t
 }

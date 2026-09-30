@@ -14,6 +14,9 @@
 - **修复：Ctrl+C/超时后剩余文件立即跳过**（OSS SDK 分片上传 part 请求不支持 context，在途请求需等 SDK 超时后才停止）
 - **修复：路径 scheme 与配置后端不一致时报错**（`tos://` 只能配 TOS、`oss://` 只能配 OSS；`s3://` 中性）——同一机器用两份配置/两个副本时不会拿混静默打错后端
 - **修复：OSS 后端把 ctx 转发给 SDK**（List/Put/Get/Delete/Stat/Abort 等可被 Ctrl+C/超时取消）；`aos set` 拼错 `--provider` 立即报错
+- **重构：后端接口只保留 `ListPage` + `Fingerprints` 两个能力原语**——`ListAll` 变为基于 `ListPage` 的通用实现；`--skip-existing` 的云端指纹由后端自取（TOS 用 List，OSS List+**并发 HEAD**，消除了此前逐文件串行 HEAD 的性能问题）；移除仅测试用/职责重叠的 `Provider()`、`Stat()`、`ListOnce()`
+- **修复：`EndpointOrDefault` 带 provider 感知**（OSS 无 endpoint/region 时不再回落到 TOS 默认）
+- **测试：新增内存版 fake Backend + 离线 Upload/Download 端到端测试**（上传下载往返、`--skip-existing`、清单跳过）
 - **包重命名**：`internal/tosx` → `internal/objstore`；`TOSPath`/`ParseTOSPath` → `CloudPath`/`ParseCloudPath`
 - **文档**：README/帮助文案补充 OSS 配置、`provider` 与 `-c` 说明
 
