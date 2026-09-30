@@ -5,8 +5,8 @@
 - **新功能：支持阿里云 OSS 后端**（与火山云 TOS 并存）
   - 抽象 `Backend` 接口（`internal/objstore`），TOS / OSS 各自实现；编排层与命令行不再依赖具体 SDK
   - 后端选择：`aos.json` 新增可选 `provider`（`tos`/`oss`）；留空时按 endpoint 自动识别（`aliyuncs.com` → OSS，`volces.com`/`ivolces.com` → TOS）。多数情况只改 endpoint/AK/SK 即可切换
-  - 云路径 scheme 放宽：`tos://` / `oss://` / `s3://` 等价，后端由配置决定
-  - OSS 使用官方 `aliyun-oss-go-sdk`：大文件分片上传/下载 + 断点续传、批量删除、孤儿分片清理；`--skip-existing` 在 OSS 下按同 key 同 size 命中时用 HEAD 取 CRC64 补齐（HEAD 失败则保守上传）
+  - 云路径：`tos://` 只能配 TOS、`oss://` 只能配 OSS（不一致报错），`s3://` 中性；后端由配置决定
+  - OSS 使用官方 `aliyun-oss-go-sdk`：大文件分片上传/下载 + 断点续传、批量删除、孤儿分片清理；`--skip-existing` 在 OSS 下按同 key 同 size 命中时用 HEAD 取 CRC64（HEAD 失败则保守上传）
   - OSS 默认走 https（裸 endpoint 时 SDK 默认 http，已改为 https）；内网如需 http 可显式写 `http://` 前缀
 - **新功能：`-c` 作为 `--config` 短选项**（ls / cp / rm / check / set 均支持），新增 `--provider` / `AOS_PROVIDER` 覆盖；默认仍是二进制同目录 `aos.json`
 - **变更：`aos config set` 简化为 `aos set`**（写入凭据，自动 0600 权限）；移除 `aos config` 查看展示与 `aos config path`——查看/定位配置直接看 `aos.json` 即可（默认二进制同目录）
