@@ -9,11 +9,11 @@
 - **`rm`**：删除对象——单对象直接删（幂等）；`-r` 递归删除前缀下所有对象并顺带清理未完成分片上传任务；`-f` 跳过确认
 - **`stat`**：查询传输历史（上传/下载均记录；默认只显示中断/失败与近 2 天的任务，`-a` 显示全部）；`--id` 查看单次任务详情
 - **`check`**：连接与权限诊断（按 region 自动尝试公网 endpoint 回退）
-- **`set`**：写入凭据（自动 0600）；查看配置直接看 `aos.json`
+- **`set`**：写入凭据（自动 0600）；查看配置直接看 `config.json`
 
 ## 安装
 
-需要 Go 1.26+。三种方式任选其一，安装后把 `aos.json`（凭据文件）放到 **aos 二进制同目录**即可使用（随二进制一起拷贝到任何机器都可用，见「配置」）。
+需要 Go 1.26+。三种方式任选其一，安装后把 `config.json`（凭据文件）放到 **aos 二进制同目录**即可使用（随二进制一起拷贝到任何机器都可用，见「配置」）。
 
 **方式一：GitHub Release 下载（推荐）** —— 二进制自带正确版本号，附 SHA256SUMS 校验：
 
@@ -23,24 +23,21 @@ https://github.com/seqyuan/aos/releases （Linux 产物 `aos-linux-amd64` / `aos
 
 ```bash
 # 远程安装最新 tag 版本（@latest = 最新 git tag）
-# 注意：go install 不注入版本号，aos version 会显示 dev
+# aos version 自动读取 Go 内嵌的模块版本（如 v0.5.2），无需额外参数
 # 在线说明：https://seqyuan.github.io/aos/
 go install github.com/seqyuan/aos/cmd/aos@latest
-
-# 或在 clone 的仓库内编译并注入 git 版本号（推荐，version 正确显示）
-go install -ldflags="-s -w -X main.version=$(git describe --tags --always --dirty)" ./cmd/aos
 ```
 
 **方式三：本地源码编译**：
 
 ```bash
-go build -o aos ./cmd/aos   # version 显示 dev；要带版本号用 make build（自动取 git tag）
+go build -o aos ./cmd/aos   # 在 git 仓库内构建会自动嵌入 tag/commit 版本；也可用 make build
 ```
 
 ## 快速开始
 
 ```bash
-# 配置：aos.json 与二进制同目录（随二进制一起拷贝即可使用，可直接编辑）；
+# 配置：config.json 与二进制同目录（随二进制一起拷贝即可使用，可直接编辑）；
 # 也可用 set 写入凭据（自动 0600 权限）
 ./aos set --ak AK... --sk SK... --endpoint oss-cn-beijing-internal.aliyuncs.com --bucket sci-report
 
@@ -68,7 +65,7 @@ go build -o aos ./cmd/aos   # version 显示 dev；要带版本号用 make build
 ./aos stat --id 3                               # 某次任务的详情（错误信息等）
 ./aos stat --limit 50                           # 最多列出 50 条
 
-`stat` 列表列：ID / 方向（up 上传、down 下载）/ 状态 / 文件进度 / 开始时间 / 完成或状态 / 路径（上传=本地路径，下载=tos 源路径）。
+`stat` 列表列：ID / 方向（up 上传、down 下载）/ 状态 / 文件进度 / 开始时间 / 完成/错误 / 路径（上传=本地路径，下载=云上源路径）。
 
 # 删除对象（单对象直接删、幂等；-r 递归删前缀下所有对象 + 清理孤儿分片，-f 跳过确认）
 ./aos rm tos://example-bucket/ACME2026001/dataset.zip
@@ -86,7 +83,7 @@ go build -o aos ./cmd/aos   # version 显示 dev；要带版本号用 make build
 
 ## 配置
 
-配置文件 `aos.json` 位于 **aos 二进制所在目录**，随二进制一起拷贝即可在任何机器使用。查找顺序：命令行 `-c`/`--config` 参数 → `AOS_CONFIG` 环境变量 → 二进制同目录 → 当前工作目录（最后一项仅为便于开发调试）：
+配置文件 `config.json` 位于 **aos 二进制所在目录**，随二进制一起拷贝即可在任何机器使用。查找顺序：命令行 `-c`/`--config` 参数 → `AOS_CONFIG` 环境变量 → 二进制同目录 → 当前工作目录（最后一项仅为便于开发调试）：
 
 火山云 TOS：
 
@@ -115,13 +112,13 @@ go build -o aos ./cmd/aos   # version 显示 dev；要带版本号用 make build
 ```
 
 - **后端选择**：`provider` 留空时按 endpoint 自动识别——含 `aliyuncs.com` 为 OSS，含 `volces.com`/`ivolces.com` 为 TOS（缺省 TOS）。因此绝大多数情况下**只改 endpoint / AK / SK 即可切换后端**。
-- **同一台机器同时用 TOS 与 OSS**：各写一份 `aos.json`，用 `-c` 切（或把二进制各拷一份到不同目录、各自放同目录 `aos.json`）。路径 scheme 会校验是否与配置后端一致（`tos://` 只能配 TOS、`oss://` 只能配 OSS；`s3://` 中性），避免配置/二进制拿混。
+- **同一台机器同时用 TOS 与 OSS**：各写一份 `config.json`，用 `-c` 切（或把二进制各拷一份到不同目录、各自放同目录 `config.json`）。路径 scheme 会校验是否与配置后端一致（`tos://` 只能配 TOS、`oss://` 只能配 OSS；`s3://` 中性），避免配置/二进制拿混。
 - **endpoint 说明**：
   - TOS 内网 / 专线：`tos-cn-beijing.ivolces.com`；TOS 公网：`tos-cn-beijing.volces.com`
   - OSS 内网 / 专线：`oss-cn-beijing-internal.aliyuncs.com`；OSS 公网：`oss-cn-beijing.aliyuncs.com`
   - OSS 默认走 **https**；若内网 endpoint 只能 http，请显式写成 `http://oss-cn-beijing-internal.aliyuncs.com`
 - **OSS 的 region 可留空**（OSS 签名不依赖 region，endpoint 已含区域）。
-- 修改/写入配置：`./aos set --ak ... --sk ... [--provider oss] [--endpoint ...] [--region ...] [--bucket ...] [-c 配置文件]`（查看配置请直接编辑/查看 `aos.json`）
+- 修改/写入配置：`./aos set --ak ... --sk ... [--provider oss] [--endpoint ...] [--region ...] [--bucket ...] [-c 配置文件]`（查看配置请直接编辑/查看 `config.json`）
 - 可用环境变量覆盖（便于 CI）：`AOS_PROVIDER` / `AOS_AK` / `AOS_SK` / `AOS_ENDPOINT` / `AOS_REGION` / `AOS_BUCKET`，或 `AOS_CONFIG` 指定配置文件路径
 - `aos set` 只写入显式指定的字段，不写入未设置的 endpoint/region/bucket（运行时自动兜底）
 - 单次命令覆盖：`-c` / `--config`（配置文件）与 `--provider` / `--endpoint` / `--region` / `--bucket` 参数
@@ -211,7 +208,7 @@ go build -o aos ./cmd/aos   # version 显示 dev；要带版本号用 make build
 - **软链接**：默认（不加 `--follow-links`）不读取链接目标内容，转为**同名文本文件**上传（文本内容 = readlink 原值，即链接指向的地址），并把链接明细（相对路径 / 目标地址 / 对象 key）记录到任务数据库 `task_links` 表；下载后自动还原为 symlink（普通下载按 `<scheme>://bucket/前缀` 匹配最近的 up 任务，单参数 `aos cp <本地路径>` 按上传记录还原）；断链（readlink 成功但目标不存在）同样按文本上传。详见「软链接：要不要加 `--follow-links`？」
 - **`--follow-links`**：软链接**溯源上传**链接目标的真实内容（key 仍用链接在项目中的相对路径）——目录链接递归展开并按 realpath 防循环、断链跳过并提示；这些溯源文件**不记录到任务数据库**（不计入 total/done/failed 统计）；**溯源链接上传失败仅提示，不中断任务**。详见「软链接：要不要加 `--follow-links`？」
 - **路径自动规范化**：`./abc//de/./f` 这类路径会自动规范为 `abc/de/f`，不会产生 `./`、`//`、`..` 段
-- 内置默认跳过 `.git/.svn/.DS_Store/.aos/__pycache__/._*/*.checkpoint/*.tmp`（跳过时会有汇总提示）
+- 内置默认跳过 `.git/.svn/.DS_Store/.aos/__pycache__/.ipynb_checkpoints/._*/*.checkpoint/*.tmp`（跳过时会有汇总提示）
 
 ## cp 选项
 
@@ -244,6 +241,8 @@ go build -o aos ./cmd/aos   # version 显示 dev；要带版本号用 make build
 --max-depth <N>   最大显示深度（0 表示不限制，默认全部显示）
 -m               显示文件修改时间
 ```
+
+`ls` 单次列表最长 2 分钟（超时会提示缩小路径范围后重试）。
 
 ## rm 选项
 

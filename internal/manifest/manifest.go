@@ -1,5 +1,6 @@
 // Package manifest 维护下载目录下的完成清单（.aos/manifest.db）。
-// 用 object key + ETag 判断是否已下载完成，不依赖本地文件大小。
+// 记录 object key → ETag；是否跳过由调用方结合 ETag 与本地文件大小判断
+// （见 objstore.skipCompleted）。
 package manifest
 
 import (

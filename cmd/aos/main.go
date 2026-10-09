@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"strings"
 	"syscall"
 	"time"
@@ -29,6 +30,21 @@ import (
 // version 由构建注入（-ldflags "-X main.version=..."）。
 // 默认 "dev" 表示本地开发构建；make build / make linux / CI / Release 会注入 git tag 或 commit SHA。
 var version = "dev"
+
+// resolveVersion 返回展示用版本号。
+// 优先用 ldflags 注入的 version；若为默认的 "dev"（如 go install github.com/seqyuan/aos/cmd/aos@latest
+// 不经 ldflags），则回退到二进制内嵌的构建信息（模块版本，如 v0.5.1），避免显示 "dev"。
+func resolveVersion() string {
+	if version != "dev" {
+		return version
+	}
+	if bi, ok := debug.ReadBuildInfo(); ok {
+		if v := bi.Main.Version; v != "" && v != "(devel)" {
+			return strings.TrimSuffix(v, "+dirty")
+		}
+	}
+	return version
+}
 
 func main() {
 	os.Exit(run(os.Args[1:]))
@@ -54,7 +70,7 @@ func run(args []string) int {
 	case "check":
 		return cmdCheck(rest)
 	case "version", "-version", "--version", "-v":
-		fmt.Printf("aos %s\n", version)
+		fmt.Printf("aos %s\n", resolveVersion())
 		return 0
 	case "help", "-h", "--help":
 		printUsage(os.Stdout)
@@ -78,7 +94,7 @@ type baseFlags struct {
 }
 
 func (b *baseFlags) register(fs *pflag.FlagSet) {
-	fs.StringVarP(&b.configPath, "config", "c", "", "配置文件路径（默认：二进制同目录 aos.json）")
+	fs.StringVarP(&b.configPath, "config", "c", "", "配置文件路径（默认：二进制同目录 config.json）")
 	fs.StringVar(&b.provider, "provider", "", "覆盖后端（tos | oss；缺省按 endpoint 自动识别）")
 	fs.StringVar(&b.endpoint, "endpoint", "", "覆盖 endpoint（如 tos-cn-beijing.ivolces.com / oss-cn-beijing.aliyuncs.com）")
 	fs.StringVar(&b.region, "region", "", "覆盖 region（如 cn-beijing）")
@@ -257,7 +273,7 @@ func cmdLS(args []string) int {
 // aos set
 
 // aos set 写入凭据（自动 0600 权限）。
-// 查看/定位配置请直接看 aos.json：默认位于二进制同目录，可用 -c 指定路径。
+// 查看/定位配置请直接看 config.json：默认位于二进制同目录，可用 -c 指定路径。
 func cmdSet(args []string) int {
 	fs := pflag.NewFlagSet("aos set", pflag.ContinueOnError)
 	var b baseFlags
@@ -409,11 +425,11 @@ func printUsage(w *os.File) {
   aos rm <云路径> [选项]          删除对象（-r 递归删除前缀，-f 跳过确认）
   aos stat [选项]                  查询传输历史（上传/下载均记录；默认：中断/失败 + 近 2 天；-a 全部）
   aos check [选项]                 诊断连接与权限
-  aos set [选项]                   写入凭据（查看配置请直接看 aos.json）
+  aos set [选项]                   写入凭据（查看配置请直接看 config.json）
   aos version                      版本号
 
 通用选项:
-  -c, --config <路径>              指定配置文件（默认：二进制同目录 aos.json）
+  -c, --config <路径>              指定配置文件（默认：二进制同目录 config.json）
   --provider <tos|oss>             覆盖后端（缺省按 endpoint 自动识别）
 
 cp 示例（上传：本地在前）:
@@ -442,8 +458,8 @@ stat 示例:
   aos stat --id 3         # 某次任务的详情（错误信息等）
 
 行为说明:
-  - 上传/下载任务均记录到 sqlite（默认 ~/.config/aos.db，--db/AOS_DB 可改）；--no-record 可关闭
-  - 下载在落盘根目录写入 .aos/manifest.db（按 object key + ETag 判断已完成，不比大小）
+  - 上传/下载任务均记录到 sqlite（默认 $AOS_DB → $XDG_CONFIG_HOME/aos.db → ~/.config/aos.db，--db 可改）；--no-record 可关闭
+  - 下载在落盘根目录写入 .aos/manifest.db（object key + ETag 与云端一致、本地文件仍在且大小一致才跳过）
   - 上传目标前缀直接铺入：文件 key = 目标前缀 + 本地相对路径（目录默认递归）
   - 大文件（≥5MB）分片上传/下载；下载默认断点续传（checkpoint 存于 .aos/checkpoints/）
   - 分片参数 --part-size（大小，默认 20MB）、-p（单文件分片并发，默认 4）、-j（文件级并发，默认按 CPU）
@@ -452,10 +468,10 @@ stat 示例:
   - 路径自动规范化（./abc//de -> abc/de）
 
 配置说明:
-  配置文件默认位于 aos 二进制同目录的 aos.json，随二进制一起拷贝即可使用（-c 可指定其他路径）。
-  后端自动识别：endpoint 含 aliyuncs.com 为 OSS、含 volces.com 为 TOS；也可在 aos.json 显式写 provider。
+  配置文件默认位于 aos 二进制同目录的 config.json，随二进制一起拷贝即可使用（-c 可指定其他路径）。
+  后端自动识别：endpoint 含 aliyuncs.com 为 OSS、含 volces.com 为 TOS；也可在 config.json 显式写 provider。
   路径 scheme 需与配置后端一致（tos:// 配 TOS、oss:// 配 OSS；s3:// 中性），不一致会报错。
   内网/专线环境用内网 endpoint：TOS 为 tos-cn-beijing.ivolces.com，OSS 为 oss-cn-beijing-internal.aliyuncs.com。
   可用环境变量 AOS_PROVIDER / AOS_AK / AOS_SK / AOS_ENDPOINT / AOS_REGION / AOS_BUCKET / AOS_DB 覆盖。
-`, version)
+`, resolveVersion())
 }

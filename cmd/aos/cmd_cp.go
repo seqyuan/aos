@@ -29,7 +29,7 @@ func cmdCP(args []string) int {
 	partTask := fs.IntP("part-task", "p", 0, "单文件分片并发（默认 4）")
 	partSize := fs.String("part-size", "", "分片大小（大文件，默认 20MB，支持 5MB~5GB，如 20MB）")
 	quiet := fs.BoolP("quiet", "q", false, "安静模式")
-	dbPath := fs.String("db", "", "sqlite 数据库路径（默认 ~/.config/aos.db）")
+	dbPath := fs.String("db", "", "sqlite 数据库路径（默认 $AOS_DB → $XDG_CONFIG_HOME/aos.db → ~/.config/aos.db）")
 	timeout := fs.Duration("timeout", 12*time.Hour, "传输总超时（默认 12h，如 30m、2h）")
 	// 上传
 	exclude := fs.StringP("exclude", "e", "", "排除规则，逗号分隔，支持通配符，如 *.tmp,.git")

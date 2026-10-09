@@ -158,6 +158,22 @@ func TestPFlagNegativeNumberAsValue(t *testing.T) {
 	}
 }
 
+// resolveVersion：ldflags 注入值优先；默认 "dev" 时回退到内嵌构建信息（不返回空）。
+func TestResolveVersion(t *testing.T) {
+	old := version
+	defer func() { version = old }()
+
+	version = "v1.2.3"
+	if got := resolveVersion(); got != "v1.2.3" {
+		t.Fatalf("注入值应优先: got %q", got)
+	}
+
+	version = "dev"
+	if got := resolveVersion(); got == "" {
+		t.Fatalf("dev 回退不应为空")
+	}
+}
+
 func TestPFlagShorthand(t *testing.T) {
 	fs := pflag.NewFlagSet("aos cp", pflag.ContinueOnError)
 	quiet := fs.BoolP("quiet", "q", false, "")

@@ -17,7 +17,7 @@ func cmdStat(args []string) int {
 	all := fs.BoolP("all", "a", false, "显示全部任务（默认只显示中断/失败与近 2 天的任务）")
 	taskID := fs.Int64("id", 0, "查看指定任务详情")
 	limit := fs.Int("limit", 20, "最多列出多少条")
-	dbPath := fs.String("db", "", "sqlite 数据库路径（默认 ~/.config/aos.db）")
+	dbPath := fs.String("db", "", "sqlite 数据库路径（默认 $AOS_DB → $XDG_CONFIG_HOME/aos.db → ~/.config/aos.db）")
 	if ok, err := parseFlagSet(fs, args, "用法: aos stat [选项]\n\n示例:\n  aos stat            # 中断/失败 + 近 2 天的任务\n  aos stat -a         # 全部任务\n  aos stat --id 3     # 某次任务详情（错误信息等）"); !ok {
 		return 2
 	} else if err != nil {
@@ -97,7 +97,7 @@ func statList(database *db.DB, dbPath string, limit int, all bool) int {
 			padDisplay(fileProgress, 17), padDisplay(start, 13), padDisplay(end, 13), truncatePath(path, 42),
 		}, " "))
 	}
-	fmt.Printf("\n数据库: %s（aos stat -id <ID> 查看详情）\n", dbPath)
+	fmt.Printf("\n数据库: %s（aos stat --id <ID> 查看详情）\n", dbPath)
 	return 0
 }
 
