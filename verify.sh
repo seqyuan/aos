@@ -6,8 +6,8 @@ BUCKET="${1:-example-bucket}"
 BIN="$(cd "$(dirname "$0")" && pwd)/aos"
 
 echo "===== aos 验证: $(hostname) $(date '+%F %T') ====="
-[ -x "$BIN" ] || { echo "❌ 找不到 $BIN，请把 aos 二进制和 aos.json 放到同一目录"; exit 1; }
-[ -f "$(dirname "$BIN")/aos.json" ] || { echo "❌ 缺少 aos.json"; exit 1; }
+[ -x "$BIN" ] || { echo "❌ 找不到 $BIN，请把 aos 二进制和 config.json 放到同一目录"; exit 1; }
+[ -f "$(dirname "$BIN")/config.json" ] || { echo "❌ 缺少 config.json"; exit 1; }
 
 "$BIN" version
 echo

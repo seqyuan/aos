@@ -125,7 +125,7 @@ func FriendlyError(err error) error {
 	case strings.Contains(msg, "does not exist") || strings.Contains(msg, "NoSuchBucket") || strings.Contains(msg, "NoSuchKey"):
 		return fmt.Errorf("目标 bucket 或对象不存在，请检查 bucket 名称与 region 是否匹配: %w", err)
 	case strings.Contains(msg, "InvalidAccessKeyId") || strings.Contains(msg, "SignatureDoesNotMatch"):
-		return fmt.Errorf("AccessKey / SecretKey 无效或不匹配，请检查配置（直接查看 aos.json，或运行 aos check 诊断）: %w", err)
+		return fmt.Errorf("AccessKey / SecretKey 无效或不匹配，请检查配置（直接查看 config.json，或运行 aos check 诊断）: %w", err)
 	default:
 		return err
 	}

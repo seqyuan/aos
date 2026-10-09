@@ -1,6 +1,6 @@
 // Package config 负责加载/保存 aos 的对象存储连接配置。
 //
-// 配置文件默认放在 aos 二进制所在目录下的 aos.json，
+// 配置文件默认放在 aos 二进制所在目录下的 config.json，
 // 这样用户拷贝整个二进制(连同 json)到任何机器都能直接使用。
 // 可用 -config 参数或环境变量 AOS_CONFIG 指定其它路径。
 package config
@@ -14,7 +14,7 @@ import (
 )
 
 // DefaultFileName 默认配置文件名字（放在可执行文件同目录）。
-const DefaultFileName = "aos.json"
+const DefaultFileName = "config.json"
 
 // 默认值：火山云 TOS / 阿里云 OSS 北京区域。
 const (
@@ -85,8 +85,8 @@ func (c Config) EndpointOrDefault() string {
 // ResolvePath 解析配置文件路径，优先级：
 //  1. 命令行 -config 参数
 //  2. 环境变量 AOS_CONFIG
-//  3. 可执行文件同目录下的 aos.json（用户拷贝二进制+json 即可使用）
-//  4. 当前工作目录下的 aos.json（便于开发调试）
+//  3. 可执行文件同目录下的 config.json（用户拷贝二进制+json 即可使用）
+//  4. 当前工作目录下的 config.json（便于开发调试）
 func ResolvePath(override string) (string, error) {
 	if override != "" {
 		return override, nil
