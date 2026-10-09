@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.5.2 — 2026-10-09
+
+- **变更（需迁移）：默认配置文件由 `aos.json` 改为 `config.json`**——二进制同目录 / 当前工作目录默认查找 `config.json`；查找优先级不变（`-c` → `AOS_CONFIG` → 二进制同目录 → 当前工作目录）。升级后请把原 `aos.json` 改名为 `config.json`（或用 `-c` 显式指定）；`aos.json.example` 同步改名为 `config.json.example`，`.gitignore` 两个名字均忽略以防凭据误提交
+- **修复：`go install` / 本地 `go build` 构建的二进制版本号显示为 `dev`**——`version` 在未经 `-ldflags` 注入时回退到 Go 内嵌构建信息（`debug.ReadBuildInfo` 的模块版本，剥离 `+dirty`），`aos version` / 空运行帮助首行能正确显示（如 `v0.5.2`）；官方 release 经 ldflags 注入时仍以注入值为准
+- **修复：`aos stat` 详情提示里的 `aos stat -id <ID>` 实为无效写法**（pflag 不支持单横线长选项），改为 `--id`
+- **文档/帮助文本对齐实际行为**：修正 README 与 `aos` 帮助里关于下载清单（`.aos/manifest.db`）是否比对本地文件大小（现明确为「ETag 一致且本地文件在、大小一致才跳过」）、默认跳过清单补充 `.ipynb_checkpoints`、`--db` 默认路径表述（`$AOS_DB` → `$XDG_CONFIG_HOME/aos.db` → `~/.config/aos.db`）、安装章节版本号说明（`go install` 不再显示 `dev`）、`ls` 2 分钟超时说明
+
 ## v0.5.1 — 2026-09-30
 
 - **文档/帮助文本补全（无功能变化）**，便于 TOS/OSS 双后端使用：
